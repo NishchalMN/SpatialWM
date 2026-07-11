@@ -2,7 +2,7 @@
 
 > A geometry-conditioned latent-world-model study built on a practical 3D-perception stack for multi-view RGB, RGB-D, and LiDAR data.
 
-**Status:** Public scaffold — geometry, LiDAR, perception, and world-model experiments are in active development. This repository makes no completed-results claim yet.
+**Status:** Public scaffold — geometry, LiDAR, perception, and world-model experiments are in active development. This repository makes no completed-results claim yet. It will distinguish components implemented from scratch from AI-assisted, human-reviewed components as work lands.
 
 ## Objective
 
