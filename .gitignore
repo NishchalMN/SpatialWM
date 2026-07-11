@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+data/
+results/*
+!results/.gitkeep
+figures/*
+!figures/.gitkeep
+*.pt
+*.npy
+*.ckpt
+.pytest_cache/
+.ruff_cache/
