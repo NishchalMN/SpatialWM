@@ -1,5 +1,4 @@
-"""
-Tests for spatialwm.geometry.ransac — RED now, green on impl.
+"""Tests for spatialwm.geometry.ransac.
 
 Contracts defended:
 1. RANSAC with 40% outliers recovers a fundamental matrix; inlier_ratio is plausible.

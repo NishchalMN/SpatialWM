@@ -46,3 +46,32 @@ For production reconstruction, normally use a mature implementation such as Open
 ## Minimal NumPy reminder
 
 Points are row-batched: an array of `N` pixels has shape `(N, 2)`, homogeneous pixels `(N, 3)`, and 3D points `(N, 3)`. A mathematical column-vector operation `M @ x` is written for a row batch as `X_rows @ M.T`. Keep that transpose rule explicit when translating equations into NumPy. Homogeneous results must be divided by their last coordinate only after checking it is finite and safely away from zero.
+
+## Interview Q&A
+
+**Q: What is the difference between `F` and `E`?**
+**A:** `F` expresses epipolar geometry in pixel coordinates and does not require calibration. `E` expresses the calibrated relationship after intrinsics are removed, so it exposes relative rotation and translation direction.
+
+**Q: Why can’t two views recover the scale of translation?**
+**A:** Image measurements constrain ray directions and relative motion, but multiplying the baseline and scene depth by the same factor leaves the projections unchanged. Only translation direction is observable without an external scale cue.
+
+**Q: Why normalize image points before the eight-point fit?**
+**A:** Normalization centers and scales coordinates so the linear system is better conditioned. The estimate is transformed back afterward; it improves numerical stability without changing the intended pixel-coordinate model.
+
+**Q: Why enforce rank 2 on `F`?**
+**A:** A physically valid fundamental matrix has rank 2. Noise makes the raw linear estimate full rank, so removing its smallest singular value projects the estimate back onto the valid geometry.
+
+**Q: Why does decomposing `E` produce four poses?**
+**A:** SVD decomposition has two rotation choices, and translation has a sign ambiguity. Their combinations give four mathematically compatible candidates before scene depth resolves the ambiguity.
+
+**Q: What is cheirality?**
+**A:** Cheirality is the positive-depth test: triangulated points should lie in front of both cameras. Counting such points selects the physically meaningful pose candidate.
+
+**Q: When would you use Sampson distance rather than reprojection error?**
+**A:** Sampson distance is a cheap first-order approximation that is useful for ranking and robust filtering many matches. Reprojection error is a more direct geometric measure but costs more and is better suited to final refinement.
+
+**Q: What tooling would you use in production?**
+**A:** I would use tested OpenCV or SfM/SLAM components for matching, robust `F` estimation, pose recovery, triangulation, degeneracy checks, and refinement, while keeping this small pipeline for controlled analysis and regression tests.
+
+**Q: What is the row-batch transpose rule in NumPy?**
+**A:** Equations often use column vectors, `M @ x`; for rows stored as `X` with shape `(N, d)`, write `X @ M.T`. Making that transpose explicit prevents silently applying transforms in the wrong direction.
