@@ -36,6 +36,44 @@ Planned data sources include TartanAir, KITTI Odometry, and SemanticKITTI. The p
 
 This initial public commit establishes the Python package, reproducible environment, configuration schema, sensor-data interfaces, evaluation contracts, and test suite. Implementations and experimental artifacts will be added incrementally with corresponding tests, figures, and reproducible commands.
 
+## Visual & Data Bootstrap
+
+### Current Visual Baseline
+
+![Geometry RANSAC Epipolar Sanity](figures/geometry_ransac_epipolar.png)
+
+*Note: The figure linked above is a deterministic synthetic geometry/RANSAC sanity visualization, not a benchmark or real-data result.*
+
+To generate the geometry visualization:
+```bash
+uv run python scripts/make_figures.py --figures geometry-ransac
+```
+
+### Data Pipeline and Pinned TartanAir Slice
+
+The initial real-data unit consists of RGB, depth, and pose data from one pinned TartanAir trajectory, stored under `data/raw/tartanair/` (which is gitignored; no data is committed to the repository).
+
+To plan or fetch this slice, use the download helper. The command below performs a dry-run transport plan, outputting details of the pinned source, slice, and modalities without transferring data:
+```bash
+uv run python scripts/download_tartanair_slice.py --output-dir data/raw/tartanair --max-gb 1
+```
+*Note: While the selected trajectory is small after extraction, the current source transport requires transferring ~2.40 GiB of environment-level archives for RGB+depth+pose. To initiate the actual download, run the command with the explicit `--download` and `--max-gb 2.5` options:*
+```bash
+uv run python scripts/download_tartanair_slice.py --output-dir data/raw/tartanair --download --max-gb 2.5
+```
+
+### Visual Artifact Roadmap
+
+Progress and deliverables follow this ordered sequence:
+1. **Geometry RANSAC:** Synthetic epipolar sanity visualization (current baseline).
+2. **ICP Alignment:** Point-cloud registration alignment and transformation visuals.
+3. **LiDAR BEV / Odometry:** Scan registration, drift plots, and bird's-eye view occupancy grids.
+4. **JEPA Collapse:** Diagnostic plots for checking representation collapse.
+5. **Evaluation Curves:** Motion-binned geometry-conditioning and latent-prediction horizon curves.
+6. **Habitat Demo:** Latent-MPC trajectories within the simulator.
+
+*(No claims are made that any downstream visual artifact past the current baseline already exists.)*
+
 ## Local Setup
 
 ```bash
