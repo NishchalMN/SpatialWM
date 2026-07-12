@@ -60,6 +60,17 @@ To generate the TartanAir RGB-D preview:
 uv run python scripts/make_figures.py --figures tartanair-rgbd
 ```
 
+### TartanAir ICP Alignment Preview
+
+![TartanAir ICP Alignment Preview](figures/tartanair_icp_alignment.png)
+
+*Note: The figure linked above is a diagnostic registration visualization of real point cloud alignment using two nearby depth frames from the local TartanAir sequence. This is a run diagnostic, not an evaluated benchmark.*
+
+To generate the TartanAir ICP alignment preview:
+```bash
+uv run python scripts/make_figures.py --figures tartanair-icp
+```
+
 ### Data Pipeline and Pinned TartanAir Slice
 
 The initial real-data unit consists of RGB, depth, and pose data from one pinned TartanAir trajectory—the outdoor/daylight-oriented first geometry slice (`abandonedfactory/Easy/P000`)—stored under `data/raw/tartanair/` (which is gitignored; no data is committed to the repository, and existing JapaneseAlley data is not removed).

@@ -16,6 +16,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from spatialwm.geometry.camera import transform_points, unproject
+from spatialwm.geometry.icp import register_point_clouds
 from spatialwm.geometry.ransac import fundamental_ransac
 
 
@@ -361,6 +363,189 @@ def generate_tartanair_rgbd(tartanair_root: str, frame_idx: int, output_dir: str
     return out_path
 
 
+def generate_tartanair_icp(
+    tartanair_root: str,
+    frame_idx: int,
+    stride: int,
+    output_dir: str,
+) -> str:
+    """Generate TartanAir real-data ICP point-cloud alignment visualization.
+
+    Args:
+        tartanair_root: Root directory of the TartanAir sequence.
+        frame_idx: Index of the first frame to load.
+        stride: Frame stride/step to the second frame.
+        output_dir: Directory where the output image should be saved.
+
+    Returns:
+        The file path to the generated figure.
+    """
+    if not os.path.exists(tartanair_root):
+        raise FileNotFoundError(f"TartanAir root directory '{tartanair_root}' does not exist.")
+    if not os.path.isdir(tartanair_root):
+        raise NotADirectoryError(f"TartanAir root path '{tartanair_root}' is not a directory.")
+
+    image_dir = os.path.join(tartanair_root, "image_left")
+    depth_dir = os.path.join(tartanair_root, "depth_left")
+
+    if not os.path.isdir(image_dir):
+        raise FileNotFoundError(f"Image directory '{image_dir}' not found.")
+    if not os.path.isdir(depth_dir):
+        raise FileNotFoundError(f"Depth directory '{depth_dir}' not found.")
+
+    image_files = sorted([f for f in os.listdir(image_dir) if f.endswith(".png")])
+    if not image_files:
+        raise FileNotFoundError(f"No PNG images found in '{image_dir}'.")
+
+    n_images = len(image_files)
+    if frame_idx < 0 or frame_idx >= n_images:
+        raise IndexError(
+            f"Frame index {frame_idx} is out of bounds for the {n_images} available frames."
+        )
+
+    frame_idx2 = frame_idx + stride
+    if frame_idx2 < 0 or frame_idx2 >= n_images:
+        raise IndexError(
+            f"Second frame index {frame_idx2} (frame_idx={frame_idx} + stride={stride}) "
+            f"is out of bounds for the {n_images} available frames."
+        )
+
+    # Local helper to load and project a frame's depth map
+    def load_and_project(idx: int) -> tuple[np.ndarray, str]:
+        selected_image_name = image_files[idx]
+        import re
+        match = re.match(r"^(\d+)", selected_image_name)
+        if not match:
+            raise ValueError(
+                f"Could not extract frame identifier from image filename '{selected_image_name}'."
+            )
+        frame_id = match.group(1)
+
+        depth_files = [f for f in os.listdir(depth_dir) if f.endswith(".npy")]
+        matching_depth_files = [f for f in depth_files if f.startswith(frame_id)]
+        if not matching_depth_files:
+            raise FileNotFoundError(
+                f"No depth file found matching frame identifier '{frame_id}' in '{depth_dir}'."
+            )
+
+        if len(matching_depth_files) > 1:
+            matching_filename = next(
+                (f for f in matching_depth_files if "left" in f),
+                matching_depth_files[0]
+            )
+        else:
+            matching_filename = matching_depth_files[0]
+
+        depth_path = os.path.join(depth_dir, matching_filename)
+        try:
+            depth_image = np.load(depth_path)
+        except Exception as e:
+            raise ValueError(f"Malformed depth file '{depth_path}': {e}")
+
+        # Mask non-finite and >= 1e3
+        h, w = depth_image.shape
+        v_grid, u_grid = np.meshgrid(np.arange(h), np.arange(w), indexing="ij")
+        u = u_grid.flatten()
+        v = v_grid.flatten()
+        z = depth_image.flatten()
+
+        valid_mask = np.isfinite(z) & (z < 1e3) & (z > 0.0)
+        u = u[valid_mask]
+        v = v[valid_mask]
+        z = z[valid_mask]
+
+        # Bounded subsample: 5000 points
+        max_points = 5000
+        if len(z) > max_points:
+            rng = np.random.default_rng(42)
+            sel_idx = rng.choice(len(z), max_points, replace=False)
+            u = u[sel_idx]
+            v = v[sel_idx]
+            z = z[sel_idx]
+
+        # Calibration assumption: fx=fy=320, cx=320, cy=240
+        K = np.array([
+            [320.0, 0.0, 320.0],
+            [0.0, 320.0, 240.0],
+            [0.0, 0.0, 1.0]
+        ], dtype=float)
+
+        uv = np.stack([u, v], axis=1)
+        pts_3d = unproject(K, uv, z)
+        return pts_3d, frame_id
+
+    pts1, id1 = load_and_project(frame_idx)
+    pts2, id2 = load_and_project(frame_idx2)
+
+    # Run Open3D ICP registration via the spatialwm wrapper
+    res = register_point_clouds(pts1, pts2, max_correspondence_distance=1.0)
+    pts1_trans = transform_points(res.transformation, pts1)
+
+    fig = plt.figure(figsize=(18, 6))
+
+    def setup_3d_scatter(ax, p1: np.ndarray, p2: np.ndarray, title: str):
+        # Map camera coords (x,y,z) to matplotlib 3D coords:
+        # x_plt = x, y_plt = z, z_plt = -y
+        ax.scatter(p1[:, 0], p1[:, 2], -p1[:, 1], c="red", s=2, alpha=0.5, label=f"Source ({id1})")
+        ax.scatter(p2[:, 0], p2[:, 2], -p2[:, 1], c="blue", s=2, alpha=0.5, label=f"Target ({id2})")
+        ax.set_title(title, fontsize=12, fontweight="bold")
+        ax.set_xlabel("X (Right) [m]", fontsize=9)
+        ax.set_ylabel("Z (Depth) [m]", fontsize=9)
+        ax.set_zlabel("-Y (Up) [m]", fontsize=9)
+        ax.grid(True, linestyle=":", alpha=0.5)
+        ax.legend(loc="upper right", markerscale=5)
+
+    # Panel 1: Before alignment
+    ax1 = fig.add_subplot(1, 3, 1, projection="3d")
+    setup_3d_scatter(ax1, pts1, pts2, "Before Alignment (Source vs Target)")
+
+    # Panel 2: After alignment
+    ax2 = fig.add_subplot(1, 3, 2, projection="3d")
+    setup_3d_scatter(ax2, pts1_trans, pts2, "After Alignment (Aligned Source vs Target)")
+
+    # Panel 3: Top-down alignment view (2D X-vs-Z scatter)
+    ax3 = fig.add_subplot(1, 3, 3)
+    ax3.scatter(
+        pts1_trans[:, 0],
+        pts1_trans[:, 2],
+        c="red",
+        s=2,
+        alpha=0.5,
+        label=f"Source ({id1})",
+    )
+    ax3.scatter(
+        pts2[:, 0],
+        pts2[:, 2],
+        c="blue",
+        s=2,
+        alpha=0.5,
+        label=f"Target ({id2})",
+    )
+    ax3.set_title("Top-down Alignment View", fontsize=12, fontweight="bold")
+    ax3.set_xlabel("X (Right) [m]", fontsize=9)
+    ax3.set_ylabel("Z (Depth) [m]", fontsize=9)
+    ax3.grid(True, linestyle=":", alpha=0.5)
+    ax3.legend(loc="upper right", markerscale=5)
+    ax3.set_aspect("equal", "box")
+
+    title_str = (
+        f"TartanAir Real-Data ICP Alignment (P000: {id1} -> {id2}, stride={stride})\n"
+        f"Sampled Points: {len(pts1)} | Open3D Fitness: {res.fitness:.4f} | "
+        f"Open3D Inlier RMSE: {res.inlier_rmse:.4f}m\n"
+        "Assumed Camera Calibration: fx=fy=320, cx=320, cy=240 (90° HFOV) | "
+        "*Diagnostic Visualization Only - Not a Benchmark*"
+    )
+    fig.suptitle(title_str, fontsize=12, fontweight="bold")
+
+    os.makedirs(output_dir, exist_ok=True)
+    out_path = os.path.join(output_dir, "tartanair_icp_alignment.png")
+    plt.tight_layout(rect=[0, 0, 1, 0.85])
+    fig.savefig(out_path, dpi=100)
+    plt.close(fig)
+
+    return out_path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate paper figures from experimental results")
     parser.add_argument(
@@ -375,11 +560,19 @@ def main() -> None:
         default="figures",
         help="Output directory for generated figures",
     )
+    choices = [
+        "collapse",
+        "motion-binned",
+        "horizon",
+        "geometry-ransac",
+        "tartanair-rgbd",
+        "tartanair-icp",
+    ]
     parser.add_argument(
         "--figures",
         type=str,
         nargs="+",
-        choices=["collapse", "motion-binned", "horizon", "geometry-ransac", "tartanair-rgbd"],
+        choices=choices,
         help="Specific figures to generate (default: all)",
     )
     parser.add_argument(
@@ -393,6 +586,12 @@ def main() -> None:
         type=int,
         default=1750,
         help="Frame index to preview in tartanair-rgbd",
+    )
+    parser.add_argument(
+        "--tartanair-stride",
+        type=int,
+        default=5,
+        help="Frame stride/step to the second frame for tartanair-icp figure",
     )
     args = parser.parse_args()
 
@@ -420,6 +619,11 @@ def main() -> None:
         elif fig == "tartanair-rgbd":
             out_path = generate_tartanair_rgbd(
                 args.tartanair_root, args.tartanair_frame, args.output_dir
+            )
+            print(f"Generated figure '{fig}' saved to: {out_path}")
+        elif fig == "tartanair-icp":
+            out_path = generate_tartanair_icp(
+                args.tartanair_root, args.tartanair_frame, args.tartanair_stride, args.output_dir
             )
             print(f"Generated figure '{fig}' saved to: {out_path}")
 

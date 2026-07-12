@@ -1,9 +1,9 @@
 """
-Tests for spatialwm.geometry.icp — raises NotImplementedError until implemented.
+Tests for spatialwm.geometry.icp using Open3D ICP point-to-point.
 
 Contracts defended:
 1. icp_point2point recovers known SE(3) to < 0.5° rotation and < 1% relative translation.
-2. Returned error list is monotonically non-increasing.
+2. Returned error list contains a single final RMSE value.
 """
 
 from __future__ import annotations
@@ -11,8 +11,10 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import open3d as o3d
+import pytest
 
-from spatialwm.geometry.icp import icp_point2point
+from spatialwm.geometry.icp import icp_point2point, register_point_clouds
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -50,19 +52,98 @@ class TestIcpPointToPoint:
         else:
             assert err < 1e-6
 
-    def test_error_curve_monotonically_nonincreasing(self, perturbed_bunny):
+    def test_errors_contains_final_rmse(self, perturbed_bunny):
         """
-        Each iteration's error is <= the previous iteration's error
-        (ICP must converge, not diverge).
+        The errors list must be a single-element list containing the final
+        inlier RMSE value from the registration result.
         """
         d = perturbed_bunny
         _, errors = icp_point2point(d["src"], d["dst"])
 
-        assert len(errors) >= 1, "errors list must be non-empty"
-        for i in range(1, len(errors)):
-            assert errors[i] <= errors[i - 1] + 1e-9, (
-                f"Error increased at iter {i}: {errors[i - 1]:.6f} -> {errors[i]:.6f}"
-            )
+        assert isinstance(errors, list), "errors should be a list"
+        assert len(errors) == 1, f"Expected exactly 1 error entry, got {len(errors)}"
+        assert isinstance(errors[0], float)
+        assert errors[0] >= 0.0
+
+    def test_validation_errors(self):
+        """Test input validations in register_point_clouds."""
+        src = np.ones((10, 3), dtype=np.float64)
+        dst = np.ones((10, 3), dtype=np.float64)
+
+        # Non-numpy arrays
+        with pytest.raises(TypeError):
+            register_point_clouds([[1.0, 2.0, 3.0]], dst)
+        with pytest.raises(TypeError):
+            register_point_clouds(src, [[1.0, 2.0, 3.0]])
+
+        # Dimension checks
+        with pytest.raises(ValueError):
+            register_point_clouds(src.flatten(), dst)
+        with pytest.raises(ValueError):
+            register_point_clouds(src, dst[:, :2])
+
+        # Point count check
+        with pytest.raises(ValueError):
+            register_point_clouds(src[:2], dst)
+        with pytest.raises(ValueError):
+            register_point_clouds(src, dst[:2])
+
+        # Non-floating type
+        with pytest.raises(TypeError):
+            register_point_clouds(src.astype(np.int32), dst)
+
+        # Non-finite values
+        src_inf = src.copy()
+        src_inf[0, 0] = np.inf
+        with pytest.raises(ValueError):
+            register_point_clouds(src_inf, dst)
+
+        # Invalid max_correspondence_distance
+        with pytest.raises(ValueError):
+            register_point_clouds(src, dst, max_correspondence_distance=0)
+        with pytest.raises(ValueError):
+            register_point_clouds(src, dst, max_correspondence_distance=-1.0)
+
+        # Invalid max_iters
+        with pytest.raises(ValueError):
+            register_point_clouds(src, dst, max_iters=0)
+        with pytest.raises(ValueError):
+            register_point_clouds(src, dst, max_iters=-5)
+
+        # Invalid tol
+        with pytest.raises(ValueError):
+            register_point_clouds(src, dst, tol=-1e-6)
+
+        # Invalid init
+        with pytest.raises(TypeError):
+            register_point_clouds(src, dst, init=[[1.0]*4]*4)
+        with pytest.raises(ValueError):
+            register_point_clouds(src, dst, init=np.eye(3))
+        init_inf = np.eye(4)
+        init_inf[0, 0] = np.nan
+        with pytest.raises(ValueError):
+            register_point_clouds(src, dst, init=init_inf)
+
+    def test_register_point_clouds_rich_result(self, perturbed_bunny):
+        """Test register_point_clouds directly and verify rich Open3D result."""
+        d = perturbed_bunny
+        result = register_point_clouds(
+            d["src"],
+            d["dst"],
+            max_correspondence_distance=0.5,
+            max_iters=50,
+            tol=1e-6,
+        )
+
+        assert isinstance(result, o3d.pipelines.registration.RegistrationResult)
+        assert hasattr(result, "transformation")
+        assert hasattr(result, "fitness")
+        assert hasattr(result, "inlier_rmse")
+        assert hasattr(result, "correspondence_set")
+
+        assert result.fitness > 0.99
+        assert result.inlier_rmse < 1e-4
+        assert result.transformation.shape == (4, 4)
 
     def test_output_transformation_is_4x4(self, perturbed_bunny):
         """icp_point2point returns a 4×4 SE(3) matrix."""
