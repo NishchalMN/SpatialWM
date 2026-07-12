@@ -31,17 +31,61 @@ The threshold converts a continuous residual into a consensus decision. A thresh
 
 ## When RANSAC fails
 
-RANSAC cannot rescue a model that is unidentifiable from its minimal sample or whose assumptions do not match the data. It can fail when the inlier ratio is too low, the minimal sample is degenerate (for example, poorly distributed or geometrically special points), the threshold is badly scaled, correspondences are correlated, or the scene contains multiple valid structures. Pure rotation, near-planar configurations, and weak baselines can make two-view geometry ambiguous even when matches are clean. A consensus mask is evidence, not proof: always inspect spatial coverage, residuals, and degeneracy diagnostics.
+RANSAC cannot rescue a model that is unidentifiable from its minimal sample or whose assumptions do not match the data. It can fail when the inlier ratio is too low, the minimal sample is degenerate, the threshold is badly scaled, correspondences are correlated, or the scene contains multiple valid structures. Pure rotation, near-planar configurations, and weak baselines can make two-view geometry ambiguous even when matches are clean. A consensus mask is evidence, not proof: inspect spatial coverage, residuals, and downstream pose/cheirality.
 
 ## Relationship to fundamental-matrix estimation
 
-For two-view matching, RANSAC wraps a fundamental-matrix estimator. A minimal correspondence sample is passed to the eight-point-style `fit_fn`; the candidate `F` is scored on all matches, commonly with Sampson distance; and matches below the threshold form the consensus set. The winning inlier mask can then support a final refit and the downstream essential-matrix, pose, and triangulation pipeline. Keeping RANSAC generic means geometry-specific choices—sample size, fitting, and residual definition—are supplied by callers rather than embedded in the robust-estimation loop.
+For two-view matching, robust estimation is performed by wrapping OpenCV's optimized fundamental matrix estimation. Rather than maintaining a custom random-sampling loop in Python, the system delegates the solver loop to OpenCV's `findFundamentalMat` with methods such as `cv2.USAC_MAGSAC` or `cv2.FM_RANSAC`. This keeps the production path realistic while preserving the conceptual separation between model fitting and consensus evaluation.
+
+## Main Calls & API Shape
+
+### Repository Interface
+
+* **Primary function:** `spatialwm.geometry.ransac.fundamental_ransac(x1, x2, thresh=1.0, p_success=0.99, max_iters=5000, method="usac_magsac") -> RansacResult`
+* **Compatibility function:** `spatialwm.geometry.ransac.ransac(data, ..., thresh=1.0, p_success=0.99, max_iters=5000) -> RansacResult`
+  * Only supports `data` of shape `(N, 4)` with rows `[u1, v1, u2, v2]`.
+  * It intentionally does **not** implement generic scratch RANSAC anymore.
+* **Input shapes/types:**
+  * `x1`, `x2`: `np.ndarray`-like arrays of shape `(N, 2)` containing matched pixel coordinates.
+  * `thresh`: positive `float`, OpenCV inlier reprojection/epipolar-line threshold in pixels.
+  * `p_success`: `float` in `(0, 1)`, passed as OpenCV `confidence`.
+  * `max_iters`: positive `int`, passed as OpenCV `maxIters`.
+  * `method`: `"usac_magsac"` by default, with `"ransac"`/`"fm_ransac"` and `"lmeds"`/`"fm_lmeds"` also accepted.
+* **Returned values:**
+  * `RansacResult.model`: `(3, 3)` `float64` fundamental matrix.
+  * `RansacResult.inliers`: `(N,)` boolean inlier mask.
+  * `RansacResult.n_iters`: the configured `max_iters`, because OpenCV does not expose the actual performed iteration count through this API.
+  * `RansacResult.inlier_ratio`: `inliers.sum() / N`.
+
+### OpenCV Backend Solver
+
+For production two-view geometry, the robust F-estimation wraps OpenCV's C++ solver directly:
+
+* **Function:** `cv2.findFundamentalMat(points1, points2, method, ransacReprojThreshold, confidence, maxIters)`
+* **Input shapes/types:**
+  * `points1`, `points2`: `np.ndarray` of shape `(N, 2)` (or `(N, 1, 2)`) containing pixel coordinates.
+  * `method`: Solver method flags:
+    * `cv2.FM_RANSAC`: Standard random sample consensus.
+    * `cv2.FM_LMEDS`: Least Median of Squares.
+    * `cv2.USAC_DEFAULT` / `cv2.USAC_ACCURATE`: Modern, highly optimized solvers.
+    * `cv2.USAC_MAGSAC`: State-of-the-art threshold-free robust estimator (highly recommended).
+  * `ransacReprojThreshold`: `float` maximum distance from point to epipolar line in pixels (e.g., `1.0` to `3.0`).
+  * `confidence`: `float` in `(0, 1)`, success confidence level (equivalent to `p_success`, typically `0.99`).
+  * `maxIters`: `int`, max iterations (typically `1000` to `5000`).
+* **Returned values:**
+  * `F`: `np.ndarray` of shape `(3, 3)`, the estimated fundamental matrix (or `None` on failure).
+  * `mask`: `np.ndarray` of shape `(N, 1)` and type `uint8` (`1` for inlier, `0` for outlier).
+
+### What to Remember for Interviews
+
+* **Outlier Insensitivity:** RANSAC bounds outlier influence by counting consensus (inliers matching a model within noise threshold) rather than minimizing average error (least squares), which is arbitrarily skewed by large outlier residuals.
+* **Minimal Sample Size ($s$):** Must be as small as possible (e.g., 8 points for linear F-estimation, 5 points for relative pose E-estimation) because the probability of drawing an all-inlier sample decays exponentially: $P(\text{all inliers}) = w^s$, where $w$ is the inlier fraction.
+* **Adaptive Loop Termination:** Instead of running for a fixed budget, we compute the required iteration count dynamically: $N = \lceil \frac{\ln(1-p)}{\ln(1-w^s)} \rceil$. Every time a larger inlier set is found, we update our estimate of $w$ and reduce the remaining iteration target.
+* **USAC/MAGSAC vs. Vanilla RANSAC:** Modern implementations (like `USAC_MAGSAC`) combine guided sampling (PROSAC), local optimization (LO-RANSAC) to refine models, degeneracy checks (DEGENSAC), and marginalization over noise distributions (MAGSAC) to be dramatically faster and more robust.
 
 ## Production guidance
 
-For production, use a mature implementation such as OpenCV's USAC/RANSAC variants or a well-tested SfM/SLAM library when its model, score, and diagnostics match the application. Production systems should record the threshold, trial budget, achieved inlier ratio, residual statistics, spatial coverage, and whether refitting succeeded. Deterministic sampling is useful for reproducible tests and debugging; deployed systems may choose a controlled seed or a stronger sampler when repeatability and adversarial robustness requirements are understood.
-
-## Diagnostics
+For production pipelines in this repository, we construct thin wrappers around mature libraries like OpenCV rather than maintaining custom Python solvers. Deployed estimation must log the solver method (e.g. `USAC_MAGSAC`), the outlier threshold, final inlier ratio, and total iteration count to monitor tracking health. Deterministic seeds are preserved in testing for reproducible validation.
 
 | Symptom | Likely source | First inspection |
 |---|---|---|

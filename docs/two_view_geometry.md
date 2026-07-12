@@ -28,7 +28,35 @@ The `spatialwm.geometry.two_view` functions form a small, NumPy-only reference p
 - **Four pose candidates** are unavoidable when an essential matrix is decomposed: signs and the two SVD rotation choices produce four mathematically compatible relative poses.
 - **Cheirality** means positive depth. The physically meaningful candidate puts reconstructed points in front of both cameras, rather than behind one camera because of an unresolved sign ambiguity.
 - **Triangulation** intersects (in a noisy, least-squares sense) the two viewing rays. Poor baseline, mismatches, and near-parallel rays make depth unreliable.
-- **Sampson distance** is a cheap first-order approximation to geometric reprojection error. It is useful for robust filtering and diagnostics without repeatedly solving a nonlinear correction problem.
+## Main Calls & API Shape
+
+### Repository Interface
+
+* **8-Point Fundamental Matrix:** `fundamental_8pt(x1, x2) -> F`
+  * *Inputs:* `x1, x2` (`np.ndarray` of shape `(N, 2)` matching points).
+  * *Returns:* `F` (`np.ndarray` of shape `(3, 3)` fundamental matrix, rank-2 constraint enforced).
+  * *OpenCV Equivalent:* `cv2.findFundamentalMat(points1, points2, method=cv2.FM_8POINT)`
+* **Essential from Fundamental:** `essential_from_F(F, K1, K2) -> E`
+  * *Inputs:* `F` `(3, 3)` matrix, `K1` and `K2` `(3, 3)` camera intrinsics matrices.
+  * *Returns:* `E` `(3, 3)` essential matrix computed as `K2.T @ F @ K1`.
+* **Essential Decomposition:** `decompose_E(E) -> List[Tuple[R, t]]`
+  * *Inputs:* `E` `(3, 3)` essential matrix.
+  * *Returns:* List of 4 candidates of `(R, t)` tuples where `R` is `(3, 3)` rotation, `t` is `(3, 1)` unit translation direction.
+  * *OpenCV Equivalent:* `cv2.recoverPose(E, points1, points2, K)` (recovers the single valid pose via cheirality check).
+* **DLT Triangulation:** `triangulate_dlt(P1, P2, x1, x2) -> X`
+  * *Inputs:* `P1, P2` `(3, 4)` projection matrices, `x1, x2` `(N, 2)` matching points.
+  * *Returns:* `X` `(N, 3)` triangulated 3D points.
+  * *OpenCV Equivalent:* `cv2.triangulatePoints(projMatr1, projMatr2, projPoints1, projPoints2) -> X_homo` of shape `(4, N)`.
+* **Sampson Distance:** `sampson_distance(F, x1, x2) -> residuals`
+  * *Inputs:* `F` `(3, 3)` fundamental matrix, `x1, x2` `(N, 2)` matching points.
+  * *Returns:* `residuals` (`np.ndarray` of shape `(N,)` first-order geometric error).
+
+### What to Remember for Interviews
+
+* **Intrinsic Calibration:** Essential matrix `E = K2.T @ F @ K1` maps calibrated ray directions, whereas `F` operates on raw pixels.
+* **Scale Ambiguity:** Translation direction `t` is a unit vector up to sign. Depth scale cannot be recovered from two views alone without external size cues.
+* **Ambiguity Resolution:** `decompose_E` produces 4 candidates. Only one candidate puts the triangulated 3D points in front of both camera centers (cheirality constraint).
+* **Epipolar Geometry Degeneracy:** Pure camera rotation or all points lying on a 3D plane makes fundamental matrix estimation degenerate (homography describes the mapping instead).
 
 ## Production guidance
 

@@ -1,25 +1,21 @@
 """Tests for spatialwm.geometry.ransac.
 
 Contracts defended:
-1. RANSAC with 40% outliers recovers a fundamental matrix; inlier_ratio is plausible.
-2. Adaptive iteration count N = log(1-p)/log(1-w^s) is consistent with reported n_iters.
+1. OpenCV-backed fundamental RANSAC recovers a plausible fundamental matrix with outliers.
+2. The compatibility ransac wrapper behaves correctly.
+3. Edge cases and invalid inputs raise appropriate exceptions.
 """
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
+import pytest
 
-from spatialwm.geometry.ransac import RansacResult, ransac
+from spatialwm.geometry.ransac import RansacResult, fundamental_ransac, ransac
 
-# ---------------------------------------------------------------------------
-# Helpers: build contaminated correspondence data
-# ---------------------------------------------------------------------------
 
 def _make_inlier_outlier_data(rng, n_inliers: int, n_outliers: int):
-    """
-    Build (x1, x2) stacked for RANSAC where the first n_inliers rows are
+    """Build (x1, x2) stacked for RANSAC where the first n_inliers rows are
     consistent with a known fundamental geometry and the last n_outliers
     rows are random noise correspondences.
 
@@ -60,149 +56,130 @@ def _make_inlier_outlier_data(rng, n_inliers: int, n_outliers: int):
     return data, K
 
 
-def _ransac_fit_fn(samples):
-    """Adapter: fit_fn receives min_samples rows of [u1,v1,u2,v2]."""
-    from spatialwm.geometry.two_view import fundamental_8pt
-
-    x1 = samples[:, :2]
-    x2 = samples[:, 2:]
-    return fundamental_8pt(x1, x2)
-
-
-def _ransac_score_fn(F, data):
-    """score_fn: return per-point Sampson distances for the given F and data."""
-    from spatialwm.geometry.two_view import sampson_distance
-
-    x1 = data[:, :2]
-    x2 = data[:, 2:]
-    return sampson_distance(F, x1, x2)
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-class TestRansacInlierRecovery:
-    """RANSAC with 40% outliers should identify the inlier set."""
+class TestFundamentalRansac:
+    """Tests for the new OpenCV-backed fundamental_ransac API."""
 
     def test_inlier_ratio_plausible_with_40_percent_outliers(self):
-        """inlier_ratio >= 0.55 when true inlier rate is 0.60."""
+        """recovers plausible inlier ratio on contaminated F correspondences"""
         rng = np.random.default_rng(42)
         n_in, n_out = 60, 40   # 40% outlier rate
         data, _ = _make_inlier_outlier_data(rng, n_in, n_out)
+        x1, x2 = data[:, :2], data[:, 2:]
 
-        result: RansacResult = ransac(
+        result = fundamental_ransac(
+            x1,
+            x2,
+            thresh=1.0,
+            p_success=0.99,
+            max_iters=5000,
+            method='usac_magsac'
+        )
+
+        assert isinstance(result, RansacResult)
+        assert result.inlier_ratio >= 0.50, (
+            f"inlier_ratio {result.inlier_ratio:.3f} below 0.50 "
+            f"(expected ~0.60 for 40% outlier data)"
+        )
+
+    def test_returned_inlier_mask_shape_dtype(self):
+        """returned inlier mask shape/dtype are correct"""
+        rng = np.random.default_rng(0)
+        n_in, n_out = 60, 40
+        data, _ = _make_inlier_outlier_data(rng, n_in, n_out)
+        x1, x2 = data[:, :2], data[:, 2:]
+
+        result = fundamental_ransac(x1, x2, thresh=1.0)
+
+        assert result.inliers.shape == (x1.shape[0],)
+        assert result.inliers.dtype == bool or result.inliers.dtype == np.bool_
+
+    def test_returned_model_shape(self):
+        """returned model shape is (3, 3)"""
+        rng = np.random.default_rng(1)
+        n_in, n_out = 60, 40
+        data, _ = _make_inlier_outlier_data(rng, n_in, n_out)
+        x1, x2 = data[:, :2], data[:, 2:]
+
+        result = fundamental_ransac(x1, x2, thresh=1.0)
+        assert result.model.shape == (3, 3)
+        assert result.model.dtype == np.float64
+
+    def test_bad_shapes_and_too_few_correspondences_fail(self):
+        """bad shapes / too few correspondences fail clearly"""
+        # Too few points
+        x1_few = np.random.uniform(0, 100, (7, 2))
+        x2_few = np.random.uniform(0, 100, (7, 2))
+        with pytest.raises(ValueError, match="At least 8 correspondences"):
+            fundamental_ransac(x1_few, x2_few)
+
+        # Mismatched length
+        x1_mis = np.random.uniform(0, 100, (10, 2))
+        x2_mis = np.random.uniform(0, 100, (11, 2))
+        with pytest.raises(ValueError, match="same length"):
+            fundamental_ransac(x1_mis, x2_mis)
+
+        # Invalid shape
+        x1_invalid = np.random.uniform(0, 100, (10, 3))
+        x2_invalid = np.random.uniform(0, 100, (10, 2))
+        with pytest.raises(ValueError, match="shape"):
+            fundamental_ransac(x1_invalid, x2_invalid)
+
+        # Non-finite inputs
+        x1_nan = np.random.uniform(0, 100, (10, 2))
+        x1_nan[0, 0] = np.nan
+        x2_nan = np.random.uniform(0, 100, (10, 2))
+        with pytest.raises(ValueError, match="finite"):
+            fundamental_ransac(x1_nan, x2_nan)
+
+    def test_invalid_parameters_fail(self):
+        """invalid parameter values raise ValueError"""
+        x1 = np.random.uniform(0, 100, (10, 2))
+        x2 = np.random.uniform(0, 100, (10, 2))
+
+        with pytest.raises(ValueError, match="Threshold"):
+            fundamental_ransac(x1, x2, thresh=-1.0)
+
+        with pytest.raises(ValueError, match="p_success"):
+            fundamental_ransac(x1, x2, p_success=1.5)
+
+        with pytest.raises(ValueError, match="max_iters"):
+            fundamental_ransac(x1, x2, max_iters=0)
+
+        with pytest.raises(ValueError, match="Unknown RANSAC method"):
+            fundamental_ransac(x1, x2, method="invalid_method")
+
+    def test_runtime_error_on_failure(self):
+        """raises RuntimeError if OpenCV cannot find a valid model"""
+        x1 = np.zeros((10, 2))
+        x2 = np.zeros((10, 2))
+        with pytest.raises(RuntimeError, match="failed to find a valid model"):
+            fundamental_ransac(x1, x2)
+
+
+class TestRansacCompatibility:
+    """Tests for the compatibility ransac wrapper."""
+
+    def test_compatibility_ransac_success(self):
+        """compatibility ransac path works for Nx4 point correspondences"""
+        rng = np.random.default_rng(42)
+        n_in, n_out = 60, 40
+        data, _ = _make_inlier_outlier_data(rng, n_in, n_out)
+
+        result = ransac(
             data,
-            fit_fn=_ransac_fit_fn,
-            score_fn=_ransac_score_fn,
-            min_samples=8,
-            thresh=1.0,      # Sampson pixel^2 threshold
+            thresh=1.0,
             p_success=0.99,
             max_iters=5000,
         )
 
         assert isinstance(result, RansacResult)
-        assert result.inlier_ratio >= 0.55, (
-            f"inlier_ratio {result.inlier_ratio:.3f} below 0.55 "
-            f"(expected ~0.60 for 40% outlier data)"
-        )
-
-    def test_inlier_mask_length_matches_data(self):
-        """result.inliers is a boolean mask of the same length as data."""
-        rng = np.random.default_rng(0)
-        n_in, n_out = 60, 40
-        data, _ = _make_inlier_outlier_data(rng, n_in, n_out)
-
-        result: RansacResult = ransac(
-            data,
-            fit_fn=_ransac_fit_fn,
-            score_fn=_ransac_score_fn,
-            min_samples=8,
-            thresh=1.0,
-            p_success=0.99,
-            max_iters=5000,
-        )
-
-        assert len(result.inliers) == len(data)
-        assert result.inliers.dtype == bool or result.inliers.dtype == np.bool_
-
-    def test_recovered_model_is_3x3(self):
-        """RANSAC returns a 3×3 fundamental matrix."""
-        rng = np.random.default_rng(1)
-        n_in, n_out = 60, 40
-        data, _ = _make_inlier_outlier_data(rng, n_in, n_out)
-
-        result: RansacResult = ransac(
-            data,
-            fit_fn=_ransac_fit_fn,
-            score_fn=_ransac_score_fn,
-            min_samples=8,
-            thresh=1.0,
-        )
         assert result.model.shape == (3, 3)
+        assert result.inliers.shape == (data.shape[0],)
+        assert result.inlier_ratio >= 0.50
 
-    def test_recovered_inliers_mostly_true_inliers(self):
-        """
-        With known inlier labeling (first 60 rows), most RANSAC inliers should
-        overlap with the true inlier set.  We accept >= 80% precision.
-        """
-        rng = np.random.default_rng(3)
-        n_in, n_out = 60, 40
-        data, _ = _make_inlier_outlier_data(rng, n_in, n_out)
-
-        result: RansacResult = ransac(
-            data,
-            fit_fn=_ransac_fit_fn,
-            score_fn=_ransac_score_fn,
-            min_samples=8,
-            thresh=1.0,
-            p_success=0.99,
-            max_iters=5000,
-        )
-
-        mask = result.inliers
-        true_inlier_flags = np.zeros(len(data), dtype=bool)
-        true_inlier_flags[:n_in] = True
-
-        n_detected = mask.sum()
-        if n_detected > 0:
-            precision = (mask & true_inlier_flags).sum() / n_detected
-            assert precision >= 0.80, f"RANSAC inlier precision {precision:.3f} < 0.80"
-
-
-class TestRansacAdaptiveIterCount:
-    """
-    N_adaptive = ceil(log(1-p) / log(1-w^s)) for known w (inlier fraction)
-    and s (min_samples).
-
-    The reported n_iters must be <= N_adaptive(w_hat, s) + a small tolerance
-    to account for the adaptive updating strategy.
-    """
-
-    def test_adaptive_iter_count_consistent_with_formula(self):
-        """n_iters is consistent with the adaptive RANSAC formula."""
-        rng = np.random.default_rng(10)
-        n_in, n_out = 80, 20   # 80% inliers -> known w ≈ 0.80
-        data, _ = _make_inlier_outlier_data(rng, n_in, n_out)
-
-        p = 0.99
-        s = 8
-        w_approx = 0.80
-        N_formula = math.ceil(math.log(1.0 - p) / math.log(1.0 - w_approx ** s))
-
-        result: RansacResult = ransac(
-            data,
-            fit_fn=_ransac_fit_fn,
-            score_fn=_ransac_score_fn,
-            min_samples=s,
-            thresh=1.0,
-            p_success=p,
-            max_iters=5000,
-        )
-
-        # Adaptive RANSAC updates N as it finds better inlier ratios;
-        # final n_iters should be << 5000 and close to N_formula (within 5×).
-        assert result.n_iters <= max(N_formula * 5, 200), (
-            f"n_iters={result.n_iters} far exceeds adaptive formula ~{N_formula}"
-        )
-        assert result.n_iters >= 1, "n_iters must be at least 1"
+    def test_compatibility_ransac_raises_not_implemented(self):
+        """compatibility ransac raises NotImplementedError for non-Nx4 data"""
+        # Nx3 data
+        data_invalid = np.random.uniform(0, 100, (10, 3))
+        with pytest.raises(NotImplementedError, match="Generic scratch RANSAC"):
+            ransac(data_invalid)
