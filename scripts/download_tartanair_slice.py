@@ -1,5 +1,5 @@
 """
-Download pinned TartanAir Easy/japanesealley P001 slice (image+depth+pose), verify checksums.
+Download pinned TartanAir Easy/abandonedfactory P000 slice (image+depth+pose), verify checksums.
 """
 
 from __future__ import annotations
@@ -86,6 +86,7 @@ EASY_SIZES: dict[str, dict[str, int]] = {
 
 # Pinned default trajectories check
 KNOWN_TRAJECTORIES: dict[str, list[str]] = {
+    "abandonedfactory": ["P000"],
     "japanesealley": ["P001", "P002", "P003", "P004", "P005", "P007"],
     "carwelding": ["P001", "P002", "P004", "P005", "P006", "P007"]
 }
@@ -256,7 +257,7 @@ def main() -> None:
     parser.add_argument(
         "--environment",
         type=str,
-        default="japanesealley",
+        default="abandonedfactory",
         help="TartanAir environment name",
     )
     parser.add_argument(
@@ -269,8 +270,8 @@ def main() -> None:
     parser.add_argument(
         "--trajectory",
         type=str,
-        default="P001",
-        help="Trajectory sequence ID (e.g. P001)",
+        default="P000",
+        help="Trajectory sequence ID (e.g. P000)",
     )
     parser.add_argument(
         "--modalities",

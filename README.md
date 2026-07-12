@@ -49,17 +49,28 @@ To generate the geometry visualization:
 uv run python scripts/make_figures.py --figures geometry-ransac
 ```
 
+### TartanAir RGB-D Preview
+
+![TartanAir RGB-D Preview](figures/tartanair_rgbd_preview.png)
+
+*Note: The figure linked above is a visualization of a real RGB-D and pose trajectory sample from the TartanAir dataset, not a benchmark or evaluation result.*
+
+To generate the TartanAir RGB-D preview:
+```bash
+uv run python scripts/make_figures.py --figures tartanair-rgbd
+```
+
 ### Data Pipeline and Pinned TartanAir Slice
 
-The initial real-data unit consists of RGB, depth, and pose data from one pinned TartanAir trajectory, stored under `data/raw/tartanair/` (which is gitignored; no data is committed to the repository).
+The initial real-data unit consists of RGB, depth, and pose data from one pinned TartanAir trajectory—the outdoor/daylight-oriented first geometry slice (`abandonedfactory/Easy/P000`)—stored under `data/raw/tartanair/` (which is gitignored; no data is committed to the repository, and existing JapaneseAlley data is not removed).
 
 To plan or fetch this slice, use the download helper. The command below performs a dry-run transport plan, outputting details of the pinned source, slice, and modalities without transferring data:
 ```bash
 uv run python scripts/download_tartanair_slice.py --output-dir data/raw/tartanair --max-gb 1
 ```
-*Note: While the selected trajectory is small after extraction, the current source transport requires transferring ~2.40 GiB of environment-level archives for RGB+depth+pose. To initiate the actual download, run the command with the explicit `--download` and `--max-gb 2.5` options:*
+*Note: While the selected trajectory is small after extraction, the current source transport requires transferring ~9.38 GiB of environment-level archives for RGB+depth+pose. To initiate the actual download, run the command with the explicit `--download` and `--max-gb 10` options:*
 ```bash
-uv run python scripts/download_tartanair_slice.py --output-dir data/raw/tartanair --download --max-gb 2.5
+uv run python scripts/download_tartanair_slice.py --output-dir data/raw/tartanair --download --max-gb 10
 ```
 
 ### Visual Artifact Roadmap

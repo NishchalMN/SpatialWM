@@ -207,6 +207,160 @@ def generate_geometry_ransac(output_dir: str) -> str:
     return out_path
 
 
+def generate_tartanair_rgbd(tartanair_root: str, frame_idx: int, output_dir: str) -> str:
+    """Generate the TartanAir RGB-D and top-down trajectory preview.
+
+    Args:
+        tartanair_root: Root directory of the TartanAir sequence.
+        frame_idx: Index of the frame to preview.
+        output_dir: Directory where the output image should be saved.
+
+    Returns:
+        The file path to the generated figure.
+    """
+    if not os.path.exists(tartanair_root):
+        raise FileNotFoundError(f"TartanAir root directory '{tartanair_root}' does not exist.")
+    if not os.path.isdir(tartanair_root):
+        raise NotADirectoryError(f"TartanAir root path '{tartanair_root}' is not a directory.")
+
+    image_dir = os.path.join(tartanair_root, "image_left")
+    depth_dir = os.path.join(tartanair_root, "depth_left")
+    pose_path = os.path.join(tartanair_root, "pose_left.txt")
+
+    if not os.path.isdir(image_dir):
+        raise FileNotFoundError(f"Image directory '{image_dir}' not found.")
+    if not os.path.isdir(depth_dir):
+        raise FileNotFoundError(f"Depth directory '{depth_dir}' not found.")
+    if not os.path.isfile(pose_path):
+        raise FileNotFoundError(f"Pose file '{pose_path}' not found.")
+
+    try:
+        poses = np.loadtxt(pose_path)
+    except Exception as e:
+        raise ValueError(f"Malformed pose file '{pose_path}': {e}")
+
+    if poses.size == 0:
+        raise ValueError(f"Pose file '{pose_path}' is empty.")
+    if len(poses.shape) != 2 or poses.shape[1] < 3:
+        raise ValueError(
+            f"Malformed pose file '{pose_path}': expected at least 3 columns (x, y, z), "
+            f"but got shape {poses.shape}."
+        )
+
+    image_files = sorted([f for f in os.listdir(image_dir) if f.endswith(".png")])
+    if not image_files:
+        raise FileNotFoundError(f"No PNG images found in '{image_dir}'.")
+
+    n_images = len(image_files)
+    n_poses = len(poses)
+    if n_images != n_poses:
+        raise ValueError(
+            f"Mismatched dataset bounds: found {n_images} images in '{image_dir}' "
+            f"but {n_poses} poses in '{pose_path}'."
+        )
+
+    if frame_idx < 0 or frame_idx >= n_images:
+        raise IndexError(
+            f"Frame index {frame_idx} is out of bounds for the {n_images} available frames."
+        )
+
+    selected_image_name = image_files[frame_idx]
+    import re
+    match = re.match(r"^(\d+)", selected_image_name)
+    if not match:
+        raise ValueError(
+            f"Could not extract frame identifier from image filename '{selected_image_name}'. "
+            f"Expected filename to start with digits."
+        )
+    frame_id = match.group(1)
+
+    depth_files = [f for f in os.listdir(depth_dir) if f.endswith(".npy")]
+    matching_depth_files = [f for f in depth_files if f.startswith(frame_id)]
+    if not matching_depth_files:
+        raise FileNotFoundError(
+            f"No depth file found matching frame identifier '{frame_id}' in '{depth_dir}'."
+        )
+    if len(matching_depth_files) > 1:
+        matching_filename = next(
+            (f for f in matching_depth_files if "left" in f),
+            matching_depth_files[0]
+        )
+    else:
+        matching_filename = matching_depth_files[0]
+
+    depth_path = os.path.join(depth_dir, matching_filename)
+
+    try:
+        depth_image = np.load(depth_path)
+    except Exception as e:
+        raise ValueError(f"Malformed depth file '{depth_path}': {e}")
+
+    rgb_path = os.path.join(image_dir, selected_image_name)
+    rgb_bgr = cv2.imread(rgb_path)
+    if rgb_bgr is None:
+        raise ValueError(f"Malformed or missing RGB image file '{rgb_path}'.")
+    rgb_image = cv2.cvtColor(rgb_bgr, cv2.COLOR_BGR2RGB)
+
+    norm_path = os.path.normpath(tartanair_root)
+    parts = norm_path.split(os.sep)
+    if len(parts) >= 3:
+        seq = parts[-1]
+        diff = parts[-2]
+        env = parts[-3]
+        if env.lower() == "abandonedfactory":
+            env_display = "AbandonedFactory"
+        else:
+            env_display = env.capitalize() if env.islower() else env
+        title_str = f"TartanAir {env_display} / {diff} / {seq}"
+    else:
+        title_str = "TartanAir AbandonedFactory / Easy / P000"
+
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5))
+    fig.suptitle(title_str, fontsize=16, fontweight="bold")
+
+    # RGB Plot
+    ax1.imshow(rgb_image)
+    ax1.set_title(f"RGB Image (Frame {frame_id})", fontsize=12)
+    ax1.axis("off")
+
+    # Depth Plot
+    invalid_mask = ~np.isfinite(depth_image) | (depth_image >= 1e3)
+    masked_depth = np.ma.masked_where(invalid_mask, depth_image)
+
+    valid_depth = depth_image[~invalid_mask]
+    if len(valid_depth) > 0:
+        vmin = np.percentile(valid_depth, 1)
+        vmax = np.percentile(valid_depth, 99)
+    else:
+        vmin, vmax = 0.1, 10.0
+
+    cmap = plt.colormaps.get_cmap("viridis").copy()
+    cmap.set_bad(color="gray")
+    im = ax2.imshow(masked_depth, cmap=cmap, vmin=vmin, vmax=vmax)
+    ax2.set_title("Depth Map", fontsize=12)
+    ax2.axis("off")
+    cbar = fig.colorbar(im, ax=ax2, orientation="vertical", pad=0.05, shrink=0.8)
+    cbar.set_label("Depth [m]")
+
+    # Trajectory Plot
+    ax3.plot(poses[:, 0], poses[:, 1], "b-", alpha=0.7, label="Trajectory")
+    ax3.plot(poses[frame_idx, 0], poses[frame_idx, 1], "ro", markersize=8, label="Current Frame")
+    ax3.set_xlabel("X [m]")
+    ax3.set_ylabel("Y [m]")
+    ax3.set_title("Top-down Trajectory", fontsize=12)
+    ax3.grid(True, linestyle=":", alpha=0.5)
+    ax3.legend()
+    ax3.set_aspect("equal", "box")
+
+    os.makedirs(output_dir, exist_ok=True)
+    out_path = os.path.join(output_dir, "tartanair_rgbd_preview.png")
+    plt.tight_layout()
+    fig.savefig(out_path, dpi=100)
+    plt.close(fig)
+
+    return out_path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate paper figures from experimental results")
     parser.add_argument(
@@ -225,8 +379,20 @@ def main() -> None:
         "--figures",
         type=str,
         nargs="+",
-        choices=["collapse", "motion-binned", "horizon", "geometry-ransac"],
+        choices=["collapse", "motion-binned", "horizon", "geometry-ransac", "tartanair-rgbd"],
         help="Specific figures to generate (default: all)",
+    )
+    parser.add_argument(
+        "--tartanair-root",
+        type=str,
+        default="data/raw/tartanair/abandonedfactory/Easy/P000",
+        help="Root directory of TartanAir slice",
+    )
+    parser.add_argument(
+        "--tartanair-frame",
+        type=int,
+        default=1750,
+        help="Frame index to preview in tartanair-rgbd",
     )
     args = parser.parse_args()
 
@@ -250,6 +416,11 @@ def main() -> None:
     for fig in figures_to_generate:
         if fig == "geometry-ransac":
             out_path = generate_geometry_ransac(args.output_dir)
+            print(f"Generated figure '{fig}' saved to: {out_path}")
+        elif fig == "tartanair-rgbd":
+            out_path = generate_tartanair_rgbd(
+                args.tartanair_root, args.tartanair_frame, args.output_dir
+            )
             print(f"Generated figure '{fig}' saved to: {out_path}")
 
 
