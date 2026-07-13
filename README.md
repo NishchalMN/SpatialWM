@@ -96,6 +96,19 @@ Progress and deliverables follow this ordered sequence:
 
 *(No claims are made that any downstream visual artifact past the current baseline already exists.)*
 
+## Ground-Truth-Validated RGB-D Registration
+
+To evaluate point-cloud registration on real downloaded TartanAir daylight data, run the evaluation script:
+```bash
+uv run python scripts/evaluate_tartanair_icp.py --output-dir /tmp/spatialwm-registration
+```
+This produces:
+- A CSV report at `/tmp/spatialwm-registration/registration_report.csv`
+- A JSON report at `/tmp/spatialwm-registration/registration_report.json`
+- A side-by-side 3D render visualization at `/tmp/spatialwm-registration/tartanair_icp_alignment.png`
+
+Note: This is a small real-data diagnostic across measured motion bins—not a benchmark.
+
 ## Local Setup
 
 ```bash
