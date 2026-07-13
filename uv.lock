@@ -1134,6 +1134,21 @@ crypto = [
 ]
 
 [[package]]
+name = "pykitti"
+version = "0.3.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "matplotlib" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "pillow" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c3/54/1ebabd74a3f4306960a014a1201cc9496fb77eae214a97837f9c47e2d2a2/pykitti-0.3.1.tar.gz", hash = "sha256:ca55411c7173bb92e58b052635e3e82ac3f7de58a4c2496cf4a6dfc8e361b92d", size = 9716, upload-time = "2019-03-01T01:47:12.1Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c3/7e/e2b71b9221ccb8503dce9673e3cb36edcdc314ec374f9e69e6d38ed1abde/pykitti-0.3.1-py2.py3-none-any.whl", hash = "sha256:5cde227d6f8ae1cf75ecb656990eb6aaf1b31e6d6877f519d1570e0c9414c9c4", size = 13160, upload-time = "2019-03-01T01:47:10.828Z" },
+]
+
+[[package]]
 name = "pyparsing"
 version = "3.3.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1433,6 +1448,7 @@ dependencies = [
     { name = "pandas" },
     { name = "pillow" },
     { name = "pyarrow" },
+    { name = "pykitti" },
     { name = "pyyaml" },
     { name = "scikit-learn" },
     { name = "scipy" },
@@ -1459,6 +1475,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.2" },
     { name = "pillow", specifier = ">=10" },
     { name = "pyarrow", specifier = ">=16" },
+    { name = "pykitti", specifier = ">=0.3.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pyyaml", specifier = ">=6" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },

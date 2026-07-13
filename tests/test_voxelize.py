@@ -66,6 +66,38 @@ class TestVoxelize:
             f"Dense cloud ({n_dense}) fewer occupied cells than sparse ({n_sparse})"
         )
 
+    def test_voxelize_invalid_inputs(self):
+        """voxelize raises ValueError or TypeError for invalid inputs."""
+        # Not a numpy array
+        with pytest.raises(TypeError):
+            voxelize([[0.0, 0.0, 0.0]], voxel=0.1)
+
+        # Invalid shape (N, 4) instead of (N, 3)
+        pts_invalid_shape = np.array([[0.0, 0.0, 0.0, 0.0]])
+        with pytest.raises(ValueError):
+            voxelize(pts_invalid_shape, voxel=0.1)
+
+        # Empty point cloud (0, 3)
+        pts_empty = np.zeros((0, 3))
+        with pytest.raises(ValueError):
+            voxelize(pts_empty, voxel=0.1)
+
+        # Non-finite values
+        pts_nan = np.array([[0.0, np.nan, 0.0]])
+        with pytest.raises(ValueError):
+            voxelize(pts_nan, voxel=0.1)
+
+        pts_inf = np.array([[0.0, np.inf, 0.0]])
+        with pytest.raises(ValueError):
+            voxelize(pts_inf, voxel=0.1)
+
+        # Non-positive voxel size
+        pts = np.array([[0.0, 0.0, 0.0]])
+        with pytest.raises(ValueError):
+            voxelize(pts, voxel=0.0)
+        with pytest.raises(ValueError):
+            voxelize(pts, voxel=-0.1)
+
 
 class TestBev:
     def test_returns_2d_array(self):
@@ -99,3 +131,35 @@ class TestBev:
         pts = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float64)
         result = bev(pts, cell=1.0)
         assert result.sum() > 0, "BEV of non-empty cloud should have occupied cells"
+
+    def test_bev_invalid_inputs(self):
+        """bev raises ValueError or TypeError for invalid inputs."""
+        # Not a numpy array
+        with pytest.raises(TypeError):
+            bev([[0.0, 0.0, 0.0]], cell=0.1)
+
+        # Invalid shape
+        pts_invalid_shape = np.array([[0.0, 0.0, 0.0, 0.0]])
+        with pytest.raises(ValueError):
+            bev(pts_invalid_shape, cell=0.1)
+
+        # Empty point cloud
+        pts_empty = np.zeros((0, 3))
+        with pytest.raises(ValueError):
+            bev(pts_empty, cell=0.1)
+
+        # Non-finite values
+        pts_nan = np.array([[0.0, np.nan, 0.0]])
+        with pytest.raises(ValueError):
+            bev(pts_nan, cell=0.1)
+
+        pts_inf = np.array([[0.0, np.inf, 0.0]])
+        with pytest.raises(ValueError):
+            bev(pts_inf, cell=0.1)
+
+        # Non-positive cell size
+        pts = np.array([[0.0, 0.0, 0.0]])
+        with pytest.raises(ValueError):
+            bev(pts, cell=0.0)
+        with pytest.raises(ValueError):
+            bev(pts, cell=-0.1)

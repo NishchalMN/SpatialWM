@@ -109,6 +109,22 @@ This produces:
 
 Note: This is a small real-data diagnostic across measured motion bins—not a benchmark.
 
+## Ground-Truth-Validated LiDAR Odometry
+
+To evaluate LiDAR scan-to-scan odometry on a bounded real KITTI raw sequence (date `2011_09_26`, drive `0005`, 10 consecutive scans, local subset only), run:
+```bash
+uv run python scripts/evaluate_kitti_lidar.py --kitti-root data/raw/kitti --frames 10 --output-dir figures
+```
+This produces:
+- A trajectory visualization plot at `figures/evaluate_kitti_lidar.png`
+- A metric summary at `figures/evaluate_kitti_lidar.json`
+
+On this local subset, the point-to-point ICP registration achieves:
+- Absolute Trajectory Error (ATE) RMSE: `0.048072 m`
+- Mean one-step Relative Pose Error (RPE): `0.061191 m`
+
+*Note: This is a short diagnostic, not a benchmark. The point-to-point ICP baseline does not perform loop closure or global optimization, and this ten-frame raw slice is not representative of full-sequence performance.*
+
 ## Local Setup
 
 ```bash
