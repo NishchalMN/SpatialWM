@@ -1,0 +1,12 @@
+{
+  "seed": 42,
+  "injected_inliers": 120,
+  "injected_outliers": 40,
+  "estimated_inliers": 121,
+  "precision": 0.9917355371900827,
+  "recall": 1.0,
+  "inlier_ratio": 0.75625,
+  "configured_iteration_cap": 5000,
+  "median_sampson_injected_inliers": 0.0009543221223383082,
+  "median_sampson_injected_outliers": 9876.564453026287
+}

@@ -7,8 +7,16 @@ results/*
 !results/.gitkeep
 figures/*
 !figures/.gitkeep
+!figures/curated/
+!figures/curated/**
 *.pt
 *.npy
 *.ckpt
 .pytest_cache/
 .ruff_cache/
+
+# Private working documents
+/CLAUDE.md
+/PROGRESS.md
+/docs/decisions.md
+/docs/learning_log.md

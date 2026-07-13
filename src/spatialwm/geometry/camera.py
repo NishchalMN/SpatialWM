@@ -112,10 +112,8 @@ def _demo():
     X = np.random.randn(10, 3)
     X[:, 2] += 10.0  # Push points in front of camera
     
-    breakpoint()
-    # Call project (will raise NotImplementedError)
-    project(K, R, t, X)
-    print(f"Projected {len(X)} points to pixels")
+    pixels = project(K, R, t, X)
+    print(f"Projected {len(X)} points to pixels; first pixel={pixels[0]}")
 
 
 if __name__ == "__main__":

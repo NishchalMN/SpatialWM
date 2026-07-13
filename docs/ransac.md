@@ -1,5 +1,7 @@
 # RANSAC: Robust Model Fitting by Consensus
 
+**Story position:** Stage 2, turning noisy candidate matches into a geometrically consistent inlier set. See [the complete 3D vision story](3d_vision_story.md).
+
 RANSAC (Random Sample Consensus) is a way to fit a model when some observations are wrong. Ordinary least squares gives every row influence, so a sufficiently large outlier group can pull the estimate away from the structure shared by the good data. RANSAC instead asks a simpler question repeatedly: **does a model fitted from a tiny sample agree with many of the other rows?**
 
 ## The consensus loop

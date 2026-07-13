@@ -1,0 +1,11 @@
+{
+  "seed": 21,
+  "n_points": 1150,
+  "target_noise_std_m": 0.002,
+  "gt_translation_norm_m": 0.2947880594596735,
+  "gt_rotation_deg": 5.423346361226216,
+  "translation_error_m": 0.00040121283284484465,
+  "rotation_error_deg": 0.006159325579774424,
+  "median_nearest_neighbour_before_m": 0.15738972892639105,
+  "median_nearest_neighbour_after_m": 0.0031128141052663713
+}

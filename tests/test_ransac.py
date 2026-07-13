@@ -46,8 +46,8 @@ def _make_inlier_outlier_data(rng, n_inliers: int, n_outliers: int):
     x2_in = proj(R_true, t_true, X)
 
     # Outlier correspondences: random pixels in image space
-    x1_out = rng.uniform(0, 640, (n_outliers, 2))
-    x2_out = rng.uniform(0, 480, (n_outliers, 2))
+    x1_out = rng.uniform([0, 0], [640, 480], (n_outliers, 2))
+    x2_out = rng.uniform([0, 0], [640, 480], (n_outliers, 2))
 
     x1 = np.vstack([x1_in, x1_out])
     x2 = np.vstack([x2_in, x2_out])

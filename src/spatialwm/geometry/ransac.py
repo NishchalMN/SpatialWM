@@ -11,7 +11,8 @@ class RansacResult:
     Fields:
         model (np.ndarray): The estimated model parameter, e.g. (3, 3) float64 matrix for F.
         inliers (np.ndarray): Boolean mask of shape (N,) indicating consensus set members.
-        n_iters (int): Total iterations performed (or max_iters if not reported).
+        n_iters (int): Configured iteration cap. OpenCV does not report the
+            number of iterations actually performed through this API.
         inlier_ratio (float): Ratio of consensus inliers to total data points (N_inliers / N).
     """
     model: np.ndarray
@@ -208,7 +209,7 @@ def _demo():
     print("Demo complete!")
     print(f"Estimated F:\n{result.model}")
     print(f"Inliers count: {np.sum(result.inliers)}/{n_pts} ({result.inlier_ratio:.1%} inliers)")
-    print(f"Iterations (reported): {result.n_iters}")
+    print(f"Configured iteration cap: {result.n_iters}")
 
 
 if __name__ == "__main__":

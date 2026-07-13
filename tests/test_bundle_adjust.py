@@ -1,5 +1,4 @@
-"""
-Tests for spatialwm.geometry.bundle_adjust — raises NotImplementedError until implemented.
+"""Tests for sparse, gauge-fixed bundle adjustment.
 
 Contract defended:
     Mean reprojection error after bundle_adjust drops > 5× compared to
@@ -11,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from spatialwm.geometry.bundle_adjust import bundle_adjust
+from spatialwm.geometry.bundle_adjust import bundle_adjust, reprojection_residuals
 
 # ---------------------------------------------------------------------------
 # Helper: compute mean reprojection error given poses, points, K, obs
@@ -73,7 +72,7 @@ class TestBundleAdjust:
         )
 
     def test_output_shapes_preserved(self, noisy_ba_problem):
-        """bundle_adjust returns poses and points with same shape as input."""
+        """Shapes are preserved and the documented similarity gauge stays fixed."""
         d = noisy_ba_problem
         poses_opt, X_opt = bundle_adjust(d["poses0"], d["X0"], d["K"], d["obs"])
 
@@ -83,6 +82,8 @@ class TestBundleAdjust:
         assert X_opt.shape == d["X0"].shape, (
             f"X shape changed: {d['X0'].shape} -> {X_opt.shape}"
         )
+        np.testing.assert_allclose(poses_opt[0], d["poses0"][0], atol=0.0, rtol=0.0)
+        assert X_opt[0, 2] == d["X0"][0, 2]
 
     def test_error_after_lower_than_before(self, noisy_ba_problem):
         """
@@ -97,3 +98,31 @@ class TestBundleAdjust:
         assert error_after <= error_before, (
             f"bundle_adjust made reprojection WORSE: {error_before:.3f} -> {error_after:.3f}"
         )
+
+    def test_residual_vector_matches_manual_mean_error(self, noisy_ba_problem):
+        """Residual packing follows [du, dv] for every observation row."""
+        d = noisy_ba_problem
+        params = np.concatenate([d["poses0"].ravel(), d["X0"].ravel()])
+
+        residuals = reprojection_residuals(
+            params,
+            len(d["poses0"]),
+            len(d["X0"]),
+            d["K"],
+            d["obs"],
+        )
+
+        assert residuals.shape == (2 * len(d["obs"]),)
+        assert np.all(np.isfinite(residuals))
+        vector_mean = np.mean(np.linalg.norm(residuals.reshape(-1, 2), axis=1))
+        manual_mean = _reprojection_error(d["poses0"], d["X0"], d["K"], d["obs"])
+        assert np.isclose(vector_mean, manual_mean)
+
+    def test_rejects_observation_with_invalid_point_index(self, noisy_ba_problem):
+        """Bad data association fails explicitly instead of indexing silently."""
+        d = noisy_ba_problem
+        bad_obs = d["obs"].copy()
+        bad_obs[0, 1] = len(d["X0"])
+
+        with np.testing.assert_raises_regex(ValueError, "point index"):
+            bundle_adjust(d["poses0"], d["X0"], d["K"], bad_obs)

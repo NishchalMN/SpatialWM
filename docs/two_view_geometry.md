@@ -1,5 +1,7 @@
 # Two-View Geometry: Intuition and Practical Use
 
+**Story position:** Stages 2–3, robust relative pose and triangulation. See [the complete 3D vision story](3d_vision_story.md).
+
 Two-view geometry explains what can be learned when the same scene is observed by two cameras. A pixel is not a 3D point by itself: with camera calibration it defines a **ray** leaving the camera center. A matching pixel in a second view defines another ray. The relative camera motion and scene structure are the geometry that makes those rays consistent. With noisy image matches, the goal is usually a useful estimate—not an exact reconstruction of every point.
 
 ## F versus E

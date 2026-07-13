@@ -1,11 +1,9 @@
-"""
-Regenerate paper figures (collapse.png, motion-binned, horizon curves) from results,
-or generate deterministic synthetic geometry visualizations.
-"""
+"""Generate reproducible geometry, real-data, and later experiment figures."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 
 import cv2
@@ -14,11 +12,372 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 
+from spatialwm.geometry.bundle_adjust import bundle_adjust, reprojection_residuals
 from spatialwm.geometry.camera import transform_points, unproject
+from spatialwm.geometry.features import match_features
 from spatialwm.geometry.icp import register_point_clouds
 from spatialwm.geometry.ransac import fundamental_ransac
+from spatialwm.geometry.tartanair import (
+    compute_se3_error,
+    derive_relative_transform,
+    parse_pose_to_transform,
+)
+from spatialwm.geometry.two_view import sampson_distance
+
+
+def generate_bundle_adjust(output_dir: str) -> str:
+    """Generate a deterministic before/after bundle-adjustment diagnostic."""
+    os.makedirs(output_dir, exist_ok=True)
+    rng = np.random.default_rng(99)
+    n_cams = 5
+    n_points = 100
+
+    K = np.array(
+        [[800.0, 0.0, 320.0], [0.0, 800.0, 240.0], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    points_gt = rng.uniform(-1.5, 1.5, (n_points, 3))
+    points_gt[:, 2] += 5.0
+
+    poses_gt = np.zeros((n_cams, 6), dtype=np.float64)
+    for camera_id in range(n_cams):
+        rotation = Rotation.from_euler("y", camera_id * 8.0, degrees=True)
+        poses_gt[camera_id, :3] = rotation.as_rotvec()
+        poses_gt[camera_id, 3] = camera_id * 0.3
+
+    observation_rows = []
+    for camera_id in range(n_cams):
+        rotation = Rotation.from_rotvec(poses_gt[camera_id, :3])
+        points_camera = rotation.apply(points_gt) + poses_gt[camera_id, 3:]
+        homogeneous = points_camera @ K.T
+        pixels = homogeneous[:, :2] / homogeneous[:, 2:3]
+        pixels += rng.normal(0.0, 0.5, pixels.shape)
+        observation_rows.append(
+            np.column_stack(
+                [
+                    np.full(n_points, camera_id),
+                    np.arange(n_points),
+                    pixels,
+                ]
+            )
+        )
+    observations = np.vstack(observation_rows)
+
+    poses_initial = poses_gt + rng.normal(0.0, 0.05, poses_gt.shape)
+    points_initial = points_gt + rng.normal(0.0, 0.2, points_gt.shape)
+    poses_optimized, points_optimized = bundle_adjust(
+        poses_initial,
+        points_initial,
+        K,
+        observations,
+    )
+
+    def residual_matrix(poses: np.ndarray, points: np.ndarray) -> np.ndarray:
+        params = np.concatenate([poses.ravel(), points.ravel()])
+        return reprojection_residuals(
+            params,
+            n_cams,
+            n_points,
+            K,
+            observations,
+        ).reshape(-1, 2)
+
+    residuals_before = residual_matrix(poses_initial, points_initial)
+    residuals_after = residual_matrix(poses_optimized, points_optimized)
+    errors_before = np.linalg.norm(residuals_before, axis=1)
+    errors_after = np.linalg.norm(residuals_after, axis=1)
+    mean_before = float(np.mean(errors_before))
+    mean_after = float(np.mean(errors_after))
+    median_before = float(np.median(errors_before))
+    median_after = float(np.median(errors_after))
+    improvement = mean_before / mean_after
+
+    representative_camera = 2
+    camera_mask = observations[:, 0].astype(int) == representative_camera
+    observed = observations[camera_mask, 2:4]
+    projected_before = observed + residuals_before[camera_mask]
+    projected_after = observed + residuals_after[camera_mask]
+    selected = np.linspace(0, len(observed) - 1, 35, dtype=int)
+
+    all_pixels = np.vstack([observed, projected_before, projected_after])
+    x_margin = 0.05 * np.ptp(all_pixels[:, 0])
+    y_margin = 0.05 * np.ptp(all_pixels[:, 1])
+    x_limits = (
+        float(np.min(all_pixels[:, 0]) - x_margin),
+        float(np.max(all_pixels[:, 0]) + x_margin),
+    )
+    y_limits = (
+        float(np.max(all_pixels[:, 1]) + y_margin),
+        float(np.min(all_pixels[:, 1]) - y_margin),
+    )
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    fig.suptitle(
+        "Sparse Bundle Adjustment: Joint Camera and 3D-Point Refinement\n"
+        f"Mean reprojection error {mean_before:.2f}px -> {mean_after:.2f}px "
+        f"({improvement:.1f}x improvement, 5 cameras / 100 points / 500 observations)",
+        fontsize=14,
+        fontweight="bold",
+    )
+
+    panels = [
+        (
+            axes[0],
+            projected_before,
+            "#d62728",
+            f"Before optimization\nmean={mean_before:.2f}px, median={median_before:.2f}px",
+        ),
+        (
+            axes[1],
+            projected_after,
+            "#2ca02c",
+            f"After optimization\nmean={mean_after:.2f}px, median={median_after:.2f}px",
+        ),
+    ]
+    for axis, projected, color, title in panels:
+        axis.scatter(
+            observed[:, 0],
+            observed[:, 1],
+            c="black",
+            s=20,
+            alpha=0.8,
+            label="Observed pixels",
+            zorder=3,
+        )
+        axis.scatter(
+            projected[:, 0],
+            projected[:, 1],
+            c=color,
+            marker="x",
+            s=28,
+            alpha=0.85,
+            label="Projected 3D points",
+            zorder=4,
+        )
+        for point_index in selected:
+            axis.plot(
+                [observed[point_index, 0], projected[point_index, 0]],
+                [observed[point_index, 1], projected[point_index, 1]],
+                color=color,
+                linewidth=0.8,
+                alpha=0.55,
+                zorder=2,
+            )
+        axis.set_title(title, fontweight="bold")
+        axis.set_xlim(*x_limits)
+        axis.set_ylim(*y_limits)
+        axis.set_aspect("equal", adjustable="box")
+        axis.set_xlabel("u [pixels]")
+        axis.set_ylabel("v [pixels]")
+        axis.grid(True, linestyle=":", alpha=0.35)
+        axis.legend(loc="upper right")
+
+    positive_errors = np.concatenate([errors_before, errors_after])
+    lower = max(float(np.min(positive_errors[positive_errors > 0])) * 0.8, 1e-3)
+    upper = float(np.max(positive_errors)) * 1.2
+    bins = np.geomspace(lower, upper, 35)
+    axes[2].hist(errors_before, bins=bins, alpha=0.65, color="#d62728", label="Before")
+    axes[2].hist(errors_after, bins=bins, alpha=0.65, color="#2ca02c", label="After")
+    axes[2].axvline(mean_before, color="#d62728", linestyle="--", linewidth=2)
+    axes[2].axvline(mean_after, color="#2ca02c", linestyle="--", linewidth=2)
+    axes[2].set_xscale("log")
+    axes[2].set_title("All-observation error distribution", fontweight="bold")
+    axes[2].set_xlabel("Euclidean reprojection error [pixels, log scale]")
+    axes[2].set_ylabel("Observation count")
+    axes[2].grid(True, which="both", linestyle=":", alpha=0.35)
+    axes[2].legend()
+
+    fig.text(
+        0.5,
+        0.02,
+        "Same camera, axes, and pixel scale in both image-plane panels. "
+        "Lines connect observed pixels to current projections. Seed=99.",
+        ha="center",
+        fontsize=10,
+    )
+    fig.tight_layout(rect=[0, 0.05, 1, 0.88])
+
+    figure_path = os.path.join(output_dir, "bundle_adjust_reprojection.png")
+    fig.savefig(figure_path, dpi=140)
+    plt.close(fig)
+
+    metrics = {
+        "seed": 99,
+        "n_cameras": n_cams,
+        "n_points": n_points,
+        "n_observations": len(observations),
+        "mean_reprojection_error_before_px": mean_before,
+        "mean_reprojection_error_after_px": mean_after,
+        "median_reprojection_error_before_px": median_before,
+        "median_reprojection_error_after_px": median_after,
+        "mean_error_improvement_factor": improvement,
+        "gauge": "first camera pose and first point world-z fixed",
+    }
+    metrics_path = os.path.join(output_dir, "bundle_adjust_metrics.json")
+    with open(metrics_path, "w", encoding="utf-8") as metrics_file:
+        json.dump(metrics, metrics_file, indent=2)
+        metrics_file.write("\n")
+
+    return figure_path
+
+
+def generate_geometry_icp(output_dir: str) -> str:
+    """Generate a known-transform ICP success case with fixed visual axes."""
+    os.makedirs(output_dir, exist_ok=True)
+    rng = np.random.default_rng(21)
+    main_cloud = rng.uniform([-2.0, -0.8, 3.0], [2.0, 0.8, 6.5], (900, 3))
+    cluster = rng.normal([1.4, 0.5, 4.2], [0.25, 0.15, 0.35], (250, 3))
+    source = np.vstack([main_cloud, cluster]).astype(np.float64)
+
+    rotation_gt = Rotation.from_euler("xyz", [2.0, -4.0, 3.0], degrees=True).as_matrix()
+    translation_gt = np.array([0.25, -0.12, 0.10])
+    target = source @ rotation_gt.T + translation_gt
+    target += rng.normal(0.0, 0.002, target.shape)
+
+    transform_gt = np.eye(4)
+    transform_gt[:3, :3] = rotation_gt
+    transform_gt[:3, 3] = translation_gt
+    registration = register_point_clouds(
+        source,
+        target,
+        max_correspondence_distance=0.8,
+        max_iters=100,
+        tol=1e-8,
+    )
+    aligned = transform_points(registration.transformation, source)
+    translation_error, rotation_error = compute_se3_error(
+        registration.transformation,
+        transform_gt,
+    )
+
+    tree = cKDTree(target)
+    residual_before, _ = tree.query(source, k=1)
+    residual_after, _ = tree.query(aligned, k=1)
+    median_before = float(np.median(residual_before))
+    median_after = float(np.median(residual_after))
+
+    combined_x = np.concatenate([source[:, 0], target[:, 0], aligned[:, 0]])
+    combined_z = np.concatenate([source[:, 2], target[:, 2], aligned[:, 2]])
+    x_limits = (float(np.min(combined_x) - 0.1), float(np.max(combined_x) + 0.1))
+    z_limits = (float(np.min(combined_z) - 0.1), float(np.max(combined_z) + 0.1))
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+
+    def alignment_panel(axis, moving, title):
+        axis.scatter(
+            target[:, 0],
+            target[:, 2],
+            s=7,
+            facecolors="none",
+            edgecolors="#377eb8",
+            linewidths=0.55,
+            alpha=0.6,
+            label="Target",
+        )
+        axis.scatter(
+            moving[:, 0],
+            moving[:, 2],
+            s=6,
+            c="#e41a1c",
+            alpha=0.5,
+            label="Source",
+        )
+        axis.set_xlim(*x_limits)
+        axis.set_ylim(*z_limits)
+        axis.set_aspect("equal", adjustable="box")
+        axis.set_xlabel("X [m]")
+        axis.set_ylabel("Z [m]")
+        axis.set_title(title, fontweight="bold")
+        axis.grid(True, linestyle=":", alpha=0.35)
+        axis.legend(markerscale=3)
+
+    alignment_panel(
+        axes[0],
+        source,
+        f"Before ICP\nmedian NN residual={median_before:.3f} m",
+    )
+    alignment_panel(
+        axes[1],
+        aligned,
+        f"After ICP — identical view\nmedian NN residual={median_after:.4f} m",
+    )
+
+    positive = np.concatenate([residual_before, residual_after])
+    positive = positive[positive > 0]
+    bins = np.geomspace(
+        max(float(np.min(positive)) * 0.8, 1e-6),
+        float(np.max(positive)) * 1.2,
+        35,
+    )
+    axes[2].hist(
+        residual_before,
+        bins=bins,
+        color="#d62728",
+        alpha=0.7,
+        label="Before",
+    )
+    axes[2].hist(
+        residual_after,
+        bins=bins,
+        color="#2ca02c",
+        alpha=0.7,
+        label="After",
+    )
+    axes[2].set_xscale("log")
+    axes[2].set_title("Nearest-target residual distribution", fontweight="bold")
+    axes[2].set_xlabel("Distance [m, log scale]")
+    axes[2].set_ylabel("Point count")
+    axes[2].grid(True, which="both", linestyle=":", alpha=0.35)
+    axes[2].legend()
+
+    fig.suptitle(
+        "ICP Known-Transform Success Case\n"
+        f"GT translation={np.linalg.norm(translation_gt):.3f} m, "
+        "GT rotation=5.4 deg | "
+        f"recovered error={translation_error:.4f} m, {rotation_error:.3f} deg",
+        fontsize=14,
+        fontweight="bold",
+    )
+    fig.text(
+        0.5,
+        0.02,
+        "Asymmetric synthetic cloud, fixed axes/view, 2 mm target noise, identity initialization.",
+        ha="center",
+        fontsize=10,
+    )
+    fig.tight_layout(rect=[0, 0.05, 1, 0.9])
+
+    figure_path = os.path.join(output_dir, "geometry_icp_known_transform.png")
+    fig.savefig(figure_path, dpi=140)
+    plt.close(fig)
+
+    metrics_path = os.path.join(output_dir, "geometry_icp_metrics.json")
+    with open(metrics_path, "w", encoding="utf-8") as metrics_file:
+        json.dump(
+            {
+                "seed": 21,
+                "n_points": len(source),
+                "target_noise_std_m": 0.002,
+                "gt_translation_norm_m": float(np.linalg.norm(translation_gt)),
+                "gt_rotation_deg": float(
+                    np.degrees(
+                        np.arccos(np.clip((np.trace(rotation_gt) - 1.0) / 2.0, -1.0, 1.0))
+                    )
+                ),
+                "translation_error_m": translation_error,
+                "rotation_error_deg": rotation_error,
+                "median_nearest_neighbour_before_m": median_before,
+                "median_nearest_neighbour_after_m": median_after,
+            },
+            metrics_file,
+            indent=2,
+        )
+        metrics_file.write("\n")
+
+    return figure_path
 
 
 def generate_geometry_ransac(output_dir: str) -> str:
@@ -90,8 +449,8 @@ def generate_geometry_ransac(output_dir: str) -> str:
 
     # Generate outlier correspondences (uniformly random in image space)
     n_outliers = 40
-    outlier_x1 = rng.uniform(0.0, 640.0, (n_outliers, 2))
-    outlier_x2 = rng.uniform(0.0, 480.0, (n_outliers, 2))
+    outlier_x1 = rng.uniform([0.0, 0.0], [640.0, 480.0], (n_outliers, 2))
+    outlier_x2 = rng.uniform([0.0, 0.0], [640.0, 480.0], (n_outliers, 2))
 
     x1 = np.vstack([inlier_x1, outlier_x1])
     x2 = np.vstack([inlier_x2, outlier_x2])
@@ -101,14 +460,24 @@ def generate_geometry_ransac(output_dir: str) -> str:
         x1, x2, thresh=1.0, p_success=0.99, max_iters=5000, method="usac_magsac"
     )
 
+    true_inliers = np.zeros(len(x1), dtype=bool)
+    true_inliers[:target_inliers] = True
+    true_positive = np.count_nonzero(result.inliers & true_inliers)
+    false_positive = np.count_nonzero(result.inliers & ~true_inliers)
+    false_negative = np.count_nonzero(~result.inliers & true_inliers)
+    precision = true_positive / max(true_positive + false_positive, 1)
+    recall = true_positive / max(true_positive + false_negative, 1)
+    errors = sampson_distance(result.model, x1, x2)
+
     # Plotting setup
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(20, 7))
 
     # Super title detailing deterministic synthetic parameters & results
     fig.suptitle(
-        "Geometry RANSAC & Epipolar Geometry Sanity (Deterministic Synthetic Scene)\n"
-        f"Estimated Inliers: {np.sum(result.inliers)} / {len(x1)} ({result.inlier_ratio:.1%}), "
-        f"RANSAC Iterations: {result.n_iters}",
+        "Robust Fundamental-Matrix Recovery with 25% Injected Outliers\n"
+        f"Estimated inliers {np.sum(result.inliers)}/{len(x1)} | "
+        f"precision={precision:.1%}, recall={recall:.1%} | "
+        f"configured iteration cap={result.n_iters}",
         fontsize=14,
         fontweight="bold",
     )
@@ -201,12 +570,271 @@ def generate_geometry_ransac(output_dir: str) -> str:
         ax.grid(True, linestyle=":", alpha=0.5)
         ax.legend(loc="upper right")
 
-    plt.tight_layout()
+    positive_errors = errors[errors > 0]
+    bins = np.geomspace(
+        max(float(np.min(positive_errors)) * 0.8, 1e-9),
+        float(np.max(errors)) * 1.2,
+        35,
+    )
+    ax3.hist(
+        errors[true_inliers],
+        bins=bins,
+        color="#2ca02c",
+        alpha=0.7,
+        label="Injected inliers",
+    )
+    ax3.hist(
+        errors[~true_inliers],
+        bins=bins,
+        color="#d62728",
+        alpha=0.7,
+        label="Injected outliers",
+    )
+    ax3.axvline(1.0, color="black", linestyle="--", linewidth=1.5, label="1 px threshold")
+    ax3.set_xscale("log")
+    ax3.set_title("Sampson error separates consensus", fontsize=12, fontweight="bold")
+    ax3.set_xlabel("Sampson distance [pixel², log scale]")
+    ax3.set_ylabel("Correspondence count")
+    ax3.grid(True, which="both", linestyle=":", alpha=0.35)
+    ax3.legend()
+
+    fig.text(
+        0.5,
+        0.02,
+        "Synthetic unit test: green/red classifications come from the estimated consensus; "
+        "histogram colours use known injected labels. OpenCV does not report actual iterations.",
+        ha="center",
+        fontsize=10,
+    )
+    plt.tight_layout(rect=[0, 0.05, 1, 0.9])
     out_path = os.path.join(output_dir, "geometry_ransac_epipolar.png")
-    fig.savefig(out_path, dpi=100)
+    fig.savefig(out_path, dpi=140)
     plt.close(fig)
 
+    metrics_path = os.path.join(output_dir, "geometry_ransac_metrics.json")
+    with open(metrics_path, "w", encoding="utf-8") as metrics_file:
+        json.dump(
+            {
+                "seed": 42,
+                "injected_inliers": target_inliers,
+                "injected_outliers": n_outliers,
+                "estimated_inliers": int(np.sum(result.inliers)),
+                "precision": precision,
+                "recall": recall,
+                "inlier_ratio": result.inlier_ratio,
+                "configured_iteration_cap": result.n_iters,
+                "median_sampson_injected_inliers": float(np.median(errors[true_inliers])),
+                "median_sampson_injected_outliers": float(np.median(errors[~true_inliers])),
+            },
+            metrics_file,
+            indent=2,
+        )
+        metrics_file.write("\n")
+
     return out_path
+
+
+def generate_tartanair_matches(
+    tartanair_root: str,
+    frame_idx: int,
+    stride: int,
+    output_dir: str,
+) -> str:
+    """Generate a real-image SIFT, mutual-match, and RANSAC diagnostic."""
+    image_dir = os.path.join(tartanair_root, "image_left")
+    pose_path = os.path.join(tartanair_root, "pose_left.txt")
+    if not os.path.isdir(image_dir) or not os.path.isfile(pose_path):
+        raise FileNotFoundError("TartanAir image_left and pose_left.txt are required")
+
+    image_files = sorted(file for file in os.listdir(image_dir) if file.endswith(".png"))
+    target_idx = frame_idx + stride
+    if frame_idx < 0 or target_idx < 0 or target_idx >= len(image_files):
+        raise IndexError("requested TartanAir feature-matching frame pair is out of bounds")
+
+    source_bgr = cv2.imread(os.path.join(image_dir, image_files[frame_idx]))
+    target_bgr = cv2.imread(os.path.join(image_dir, image_files[target_idx]))
+    if source_bgr is None or target_bgr is None:
+        raise ValueError("failed to decode a TartanAir RGB image")
+
+    matches = match_features(
+        source_bgr,
+        target_bgr,
+        detector="sift",
+        ratio=0.75,
+        mutual=True,
+        max_features=4000,
+        seed=0,
+    )
+    if len(matches.points1) < 8:
+        raise RuntimeError("fewer than eight filtered TartanAir correspondences")
+    geometry = fundamental_ransac(
+        matches.points1,
+        matches.points2,
+        thresh=1.0,
+        p_success=0.999,
+        max_iters=5000,
+    )
+    errors = sampson_distance(geometry.model, matches.points1, matches.points2)
+
+    poses = np.loadtxt(pose_path)
+    source_pose = parse_pose_to_transform(poses[frame_idx])
+    target_pose = parse_pose_to_transform(poses[target_idx])
+    relative_pose = derive_relative_transform(source_pose, target_pose)
+    baseline = float(np.linalg.norm(relative_pose[:3, 3]))
+    rotation_deg = float(
+        np.degrees(
+            np.arccos(
+                np.clip((np.trace(relative_pose[:3, :3]) - 1.0) / 2.0, -1.0, 1.0)
+            )
+        )
+    )
+
+    source_rgb = cv2.cvtColor(source_bgr, cv2.COLOR_BGR2RGB)
+    target_rgb = cv2.cvtColor(target_bgr, cv2.COLOR_BGR2RGB)
+    height, width = source_rgb.shape[:2]
+    canvas = np.hstack([source_rgb, target_rgb])
+
+    fig = plt.figure(figsize=(18, 11))
+    grid = fig.add_gridspec(2, 2, height_ratios=[1.35, 1.0])
+    match_axis = fig.add_subplot(grid[0, :])
+    epipolar_axis = fig.add_subplot(grid[1, 0])
+    error_axis = fig.add_subplot(grid[1, 1])
+
+    match_axis.imshow(canvas)
+    inlier_indices = np.flatnonzero(geometry.inliers)
+    outlier_indices = np.flatnonzero(~geometry.inliers)
+    show_inliers = inlier_indices[
+        np.linspace(0, len(inlier_indices) - 1, min(55, len(inlier_indices)), dtype=int)
+    ]
+    show_outliers = outlier_indices[: min(15, len(outlier_indices))]
+    for index in show_inliers:
+        p1 = matches.points1[index]
+        p2 = matches.points2[index] + np.array([width, 0.0])
+        match_axis.plot(
+            [p1[0], p2[0]],
+            [p1[1], p2[1]],
+            color="#76c893",
+            linewidth=0.9,
+            alpha=0.72,
+        )
+    for index in show_outliers:
+        p1 = matches.points1[index]
+        p2 = matches.points2[index] + np.array([width, 0.0])
+        match_axis.plot(
+            [p1[0], p2[0]],
+            [p1[1], p2[1]],
+            color="#ef476f",
+            linewidth=1.2,
+            alpha=0.85,
+        )
+    match_axis.axvline(width, color="white", linewidth=2)
+    match_axis.text(12, 28, f"Source frame {frame_idx}", color="white", weight="bold")
+    match_axis.text(width + 12, 28, f"Target frame {target_idx}", color="white", weight="bold")
+    match_axis.set_title(
+        f"Geometrically verified matches: {len(inlier_indices)} inliers / "
+        f"{len(matches.points1)} filtered ({geometry.inlier_ratio:.1%})",
+        fontweight="bold",
+    )
+    match_axis.axis("off")
+
+    epipolar_axis.imshow(target_rgb)
+    line_indices = show_inliers[
+        np.linspace(0, len(show_inliers) - 1, min(8, len(show_inliers)), dtype=int)
+    ]
+    colours = plt.cm.tab10(np.arange(len(line_indices)))
+    for index, colour in zip(line_indices, colours):
+        point1 = matches.points1[index]
+        point2 = matches.points2[index]
+        line = cv2.computeCorrespondEpilines(point1.reshape(1, 1, 2), 1, geometry.model)[0, 0]
+        a, b, c = line
+        if abs(b) > 1e-8:
+            xs = np.array([0.0, float(width)])
+            ys = -(a * xs + c) / b
+        else:
+            xs = np.full(2, -c / a)
+            ys = np.array([0.0, float(height)])
+        epipolar_axis.plot(xs, ys, color=colour, linewidth=1.5)
+        epipolar_axis.scatter(
+            point2[0],
+            point2[1],
+            color=colour,
+            edgecolor="black",
+            s=45,
+            zorder=3,
+        )
+    epipolar_axis.set_xlim(0, width)
+    epipolar_axis.set_ylim(height, 0)
+    epipolar_axis.set_title("Target points lie on estimated epipolar lines", fontweight="bold")
+    epipolar_axis.axis("off")
+
+    inlier_errors = errors[geometry.inliers]
+    outlier_errors = errors[~geometry.inliers]
+    positive = errors[errors > 0]
+    bins = np.geomspace(max(float(np.min(positive)) * 0.8, 1e-9), float(np.max(errors)) * 1.2, 35)
+    error_axis.hist(inlier_errors, bins=bins, alpha=0.72, color="#2ca02c", label="RANSAC inliers")
+    if len(outlier_errors):
+        error_axis.hist(
+            outlier_errors,
+            bins=bins,
+            alpha=0.72,
+            color="#d62728",
+            label="RANSAC outliers",
+        )
+    error_axis.set_xscale("log")
+    error_axis.set_title("Real-data Sampson error", fontweight="bold")
+    error_axis.set_xlabel("Sampson distance [pixel², log scale]")
+    error_axis.set_ylabel("Correspondence count")
+    error_axis.grid(True, which="both", linestyle=":", alpha=0.35)
+    error_axis.legend()
+
+    fig.suptitle(
+        "TartanAir Classical Correspondence Pipeline\n"
+        f"SIFT keypoints {matches.n_keypoints1}/{matches.n_keypoints2} | "
+        f"raw {matches.raw_match_count} -> ratio {matches.ratio_match_count} -> "
+        f"mutual {matches.mutual_match_count} -> RANSAC {len(inlier_indices)} | "
+        f"GT motion {baseline:.3f} m, {rotation_deg:.2f} deg",
+        fontsize=14,
+        fontweight="bold",
+    )
+    fig.text(
+        0.5,
+        0.02,
+        "Green lines are estimated geometric inliers; red lines are rejected filtered matches. "
+        "Single-sequence diagnostic, not a benchmark.",
+        ha="center",
+        fontsize=10,
+    )
+    fig.tight_layout(rect=[0, 0.05, 1, 0.91])
+
+    os.makedirs(output_dir, exist_ok=True)
+    figure_path = os.path.join(output_dir, "tartanair_feature_matches.png")
+    fig.savefig(figure_path, dpi=140)
+    plt.close(fig)
+
+    metrics_path = os.path.join(output_dir, "tartanair_feature_metrics.json")
+    with open(metrics_path, "w", encoding="utf-8") as metrics_file:
+        json.dump(
+            {
+                "source_frame": frame_idx,
+                "target_frame": target_idx,
+                "detector": matches.detector,
+                "keypoints_source": matches.n_keypoints1,
+                "keypoints_target": matches.n_keypoints2,
+                "raw_matches": matches.raw_match_count,
+                "ratio_matches": matches.ratio_match_count,
+                "mutual_matches": matches.mutual_match_count,
+                "ransac_inliers": int(np.sum(geometry.inliers)),
+                "ransac_inlier_ratio": geometry.inlier_ratio,
+                "median_sampson_inliers": float(np.median(inlier_errors)),
+                "gt_baseline_m": baseline,
+                "gt_rotation_deg": rotation_deg,
+            },
+            metrics_file,
+            indent=2,
+        )
+        metrics_file.write("\n")
+
+    return figure_path
 
 
 def generate_tartanair_rgbd(tartanair_root: str, frame_idx: int, output_dir: str) -> str:
@@ -363,7 +991,7 @@ def generate_tartanair_rgbd(tartanair_root: str, frame_idx: int, output_dir: str
     return out_path
 
 
-def generate_tartanair_icp(
+def _generate_tartanair_icp_legacy(
     tartanair_root: str,
     frame_idx: int,
     stride: int,
@@ -546,6 +1174,264 @@ def generate_tartanair_icp(
     return out_path
 
 
+def generate_tartanair_icp(
+    tartanair_root: str,
+    frame_idx: int,
+    stride: int,
+    output_dir: str,
+) -> str:
+    """Generate a fixed-view, ground-truth-validated RGB-D ICP diagnostic."""
+    image_dir = os.path.join(tartanair_root, "image_left")
+    depth_dir = os.path.join(tartanair_root, "depth_left")
+    pose_path = os.path.join(tartanair_root, "pose_left.txt")
+    if (
+        not os.path.isdir(image_dir)
+        or not os.path.isdir(depth_dir)
+        or not os.path.isfile(pose_path)
+    ):
+        raise FileNotFoundError("TartanAir image_left, depth_left, and pose_left.txt are required")
+
+    image_files = sorted(file for file in os.listdir(image_dir) if file.endswith(".png"))
+    depth_files = sorted(file for file in os.listdir(depth_dir) if file.endswith(".npy"))
+    target_idx = frame_idx + stride
+    if frame_idx < 0 or target_idx < 0 or target_idx >= len(image_files):
+        raise IndexError("requested TartanAir ICP frame pair is out of bounds")
+
+    K = np.array(
+        [[320.0, 0.0, 320.0], [0.0, 320.0, 240.0], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+
+    def load_frame(index: int) -> tuple[np.ndarray, np.ndarray, str]:
+        image_name = image_files[index]
+        frame_id = image_name.split("_")[0]
+        depth_candidates = [file for file in depth_files if file.startswith(frame_id)]
+        if not depth_candidates:
+            raise FileNotFoundError(f"no depth map found for TartanAir frame {frame_id}")
+
+        bgr = cv2.imread(os.path.join(image_dir, image_name))
+        if bgr is None:
+            raise ValueError(f"failed to decode TartanAir frame {frame_id}")
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        depth = np.load(os.path.join(depth_dir, depth_candidates[0]))
+
+        height, width = depth.shape
+        rows, columns = np.meshgrid(
+            np.arange(height),
+            np.arange(width),
+            indexing="ij",
+        )
+        z = depth.ravel()
+        u = columns.ravel()
+        v = rows.ravel()
+        valid = np.isfinite(z) & (z > 0.0) & (z < 50.0)
+        z = z[valid]
+        u = u[valid]
+        v = v[valid]
+
+        rng = np.random.default_rng(42)
+        if len(z) > 8000:
+            selected = rng.choice(len(z), 8000, replace=False)
+            z = z[selected]
+            u = u[selected]
+            v = v[selected]
+        points = unproject(K, np.column_stack([u, v]), z)
+        return points, rgb, frame_id
+
+    source_points, source_rgb, source_id = load_frame(frame_idx)
+    target_points, target_rgb, target_id = load_frame(target_idx)
+    registration = register_point_clouds(
+        source_points,
+        target_points,
+        max_correspondence_distance=1.0,
+        max_iters=80,
+        tol=1e-7,
+    )
+    aligned_source = transform_points(registration.transformation, source_points)
+
+    poses = np.loadtxt(pose_path)
+    source_pose = parse_pose_to_transform(poses[frame_idx])
+    target_pose = parse_pose_to_transform(poses[target_idx])
+    ground_truth = derive_relative_transform(source_pose, target_pose)
+    translation_error, rotation_error = compute_se3_error(
+        registration.transformation,
+        ground_truth,
+    )
+    baseline = float(np.linalg.norm(ground_truth[:3, 3]))
+    ground_truth_rotation = float(
+        np.degrees(
+            np.arccos(
+                np.clip((np.trace(ground_truth[:3, :3]) - 1.0) / 2.0, -1.0, 1.0)
+            )
+        )
+    )
+
+    target_tree = cKDTree(target_points)
+    residual_before, _ = target_tree.query(source_points, k=1)
+    residual_after, _ = target_tree.query(aligned_source, k=1)
+    median_before = float(np.median(residual_before))
+    median_after = float(np.median(residual_after))
+    translation_error_ratio = translation_error / max(baseline, 1e-12)
+
+    display_rng = np.random.default_rng(5)
+    source_display = display_rng.choice(
+        len(source_points),
+        min(1800, len(source_points)),
+        replace=False,
+    )
+    target_display = display_rng.choice(
+        len(target_points),
+        min(1800, len(target_points)),
+        replace=False,
+    )
+
+    combined_x = np.concatenate(
+        [source_points[:, 0], target_points[:, 0], aligned_source[:, 0]]
+    )
+    combined_z = np.concatenate(
+        [source_points[:, 2], target_points[:, 2], aligned_source[:, 2]]
+    )
+    x_limits = tuple(np.percentile(combined_x, [1, 99]))
+    z_limits = tuple(np.percentile(combined_z, [1, 99]))
+
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    axes[0, 0].imshow(source_rgb)
+    axes[0, 0].set_title(f"Source RGB: frame {source_id}", fontweight="bold")
+    axes[0, 0].axis("off")
+    axes[0, 1].imshow(target_rgb)
+    axes[0, 1].set_title(f"Target RGB: frame {target_id}", fontweight="bold")
+    axes[0, 1].axis("off")
+
+    axes[0, 2].axis("off")
+    axes[0, 2].text(
+        0.02,
+        0.97,
+        "Ground-truth validation\n\n"
+        f"GT motion: {baseline:.3f} m, {ground_truth_rotation:.2f} deg\n"
+        f"ICP translation error: {translation_error:.3f} m\n"
+        f"ICP rotation error: {rotation_error:.2f} deg\n\n"
+        "Internal alignment diagnostics\n\n"
+        f"Open3D fitness: {registration.fitness:.3f}\n"
+        f"Open3D inlier RMSE: {registration.inlier_rmse:.3f} m\n"
+        f"Median NN residual: {median_before:.3f} -> {median_after:.3f} m",
+        va="top",
+        fontsize=12,
+        bbox={"facecolor": "#f5f5f5", "edgecolor": "#888888", "boxstyle": "round,pad=0.7"},
+    )
+
+    def plot_alignment(axis, source, title):
+        axis.scatter(
+            target_points[target_display, 0],
+            target_points[target_display, 2],
+            s=5,
+            facecolors="none",
+            edgecolors="#377eb8",
+            linewidths=0.45,
+            alpha=0.55,
+            label="Target",
+        )
+        axis.scatter(
+            source[source_display, 0],
+            source[source_display, 2],
+            s=5,
+            c="#e41a1c",
+            alpha=0.5,
+            label="Source",
+        )
+        axis.set_xlim(*x_limits)
+        axis.set_ylim(*z_limits)
+        axis.set_aspect("equal", adjustable="box")
+        axis.set_xlabel("X right [m]")
+        axis.set_ylabel("Z forward [m]")
+        axis.set_title(title, fontweight="bold")
+        axis.grid(True, linestyle=":", alpha=0.35)
+        axis.legend(markerscale=3)
+
+    plot_alignment(
+        axes[1, 0],
+        source_points,
+        f"Before ICP\nmedian nearest-neighbour residual={median_before:.3f} m",
+    )
+    plot_alignment(
+        axes[1, 1],
+        aligned_source,
+        f"After ICP — identical view\nmedian nearest-neighbour residual={median_after:.3f} m",
+    )
+
+    colour_max = max(float(np.percentile(residual_after, 95)), 1e-6)
+    residual_plot = axes[1, 2].scatter(
+        aligned_source[source_display, 0],
+        aligned_source[source_display, 2],
+        c=residual_after[source_display],
+        cmap="magma",
+        vmin=0.0,
+        vmax=colour_max,
+        s=7,
+        alpha=0.8,
+    )
+    axes[1, 2].scatter(
+        target_points[target_display, 0],
+        target_points[target_display, 2],
+        c="#999999",
+        s=2,
+        alpha=0.15,
+    )
+    axes[1, 2].set_xlim(*x_limits)
+    axes[1, 2].set_ylim(*z_limits)
+    axes[1, 2].set_aspect("equal", adjustable="box")
+    axes[1, 2].set_xlabel("X right [m]")
+    axes[1, 2].set_ylabel("Z forward [m]")
+    axes[1, 2].set_title("After-ICP residual map", fontweight="bold")
+    axes[1, 2].grid(True, linestyle=":", alpha=0.35)
+    colour_bar = fig.colorbar(residual_plot, ax=axes[1, 2], fraction=0.046, pad=0.04)
+    colour_bar.set_label("Nearest-target distance [m]")
+
+    fig.suptitle(
+        "ICP Failure Case: Local Alignment Improves, but Ground-Truth Translation Is Wrong\n"
+        f"P000 frame {frame_idx} -> {target_idx} (stride={stride}) | "
+        f"translation error is {translation_error_ratio:.1f}x the {baseline:.3f} m baseline | "
+        "single-pair diagnostic, not a benchmark",
+        fontsize=14,
+        fontweight="bold",
+    )
+    fig.tight_layout(rect=[0, 0, 1, 0.91])
+
+    os.makedirs(output_dir, exist_ok=True)
+    figure_path = os.path.join(output_dir, "tartanair_icp_alignment.png")
+    fig.savefig(figure_path, dpi=140)
+    plt.close(fig)
+
+    metrics_path = os.path.join(output_dir, "tartanair_icp_metrics.json")
+    with open(metrics_path, "w", encoding="utf-8") as metrics_file:
+        json.dump(
+            {
+                "source_frame": frame_idx,
+                "target_frame": target_idx,
+                "stride": stride,
+                "gt_baseline_m": baseline,
+                "gt_rotation_deg": ground_truth_rotation,
+                "translation_error_m": translation_error,
+                "rotation_error_deg": rotation_error,
+                "translation_error_over_baseline": translation_error_ratio,
+                "open3d_fitness": registration.fitness,
+                "open3d_inlier_rmse_m": registration.inlier_rmse,
+                "median_nearest_neighbour_before_m": median_before,
+                "median_nearest_neighbour_after_m": median_after,
+                "estimated_source_to_target": registration.transformation.tolist(),
+                "ground_truth_source_to_target": ground_truth.tolist(),
+                "interpretation": (
+                    "failure case: nearest-neighbour alignment improves while "
+                    "ground-truth translation remains incorrect"
+                ),
+            },
+            metrics_file,
+            indent=2,
+        )
+        metrics_file.write("\n")
+
+    return figure_path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate paper figures from experimental results")
     parser.add_argument(
@@ -561,11 +1447,14 @@ def main() -> None:
         help="Output directory for generated figures",
     )
     choices = [
+        "bundle-adjust",
         "collapse",
         "motion-binned",
         "horizon",
         "geometry-ransac",
+        "geometry-icp",
         "tartanair-rgbd",
+        "tartanair-matches",
         "tartanair-icp",
     ]
     parser.add_argument(
@@ -598,7 +1487,7 @@ def main() -> None:
     # Determine which figures to run
     figures_to_generate = args.figures
     if figures_to_generate is None:
-        figures_to_generate = ["collapse", "motion-binned", "horizon", "geometry-ransac"]
+        figures_to_generate = ["geometry-ransac", "geometry-icp", "bundle-adjust"]
 
     # Figures requiring experimental results
     results_needed_figs = ["collapse", "motion-binned", "horizon"]
@@ -613,12 +1502,26 @@ def main() -> None:
 
     # Generate chosen figures
     for fig in figures_to_generate:
-        if fig == "geometry-ransac":
+        if fig == "bundle-adjust":
+            out_path = generate_bundle_adjust(args.output_dir)
+            print(f"Generated figure '{fig}' saved to: {out_path}")
+        elif fig == "geometry-icp":
+            out_path = generate_geometry_icp(args.output_dir)
+            print(f"Generated figure '{fig}' saved to: {out_path}")
+        elif fig == "geometry-ransac":
             out_path = generate_geometry_ransac(args.output_dir)
             print(f"Generated figure '{fig}' saved to: {out_path}")
         elif fig == "tartanair-rgbd":
             out_path = generate_tartanair_rgbd(
                 args.tartanair_root, args.tartanair_frame, args.output_dir
+            )
+            print(f"Generated figure '{fig}' saved to: {out_path}")
+        elif fig == "tartanair-matches":
+            out_path = generate_tartanair_matches(
+                args.tartanair_root,
+                args.tartanair_frame,
+                args.tartanair_stride,
+                args.output_dir,
             )
             print(f"Generated figure '{fig}' saved to: {out_path}")
         elif fig == "tartanair-icp":

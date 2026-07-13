@@ -1,5 +1,7 @@
 # TartanAir RGB-D Registration Validation: Diagnostic Reference
 
+**Story position:** Stage 6, validating RGB-D point-cloud registration against known camera motion. See [the complete 3D vision story](3d_vision_story.md).
+
 This document serves as a technical reference and revision guide for the ground-truth-validated RGB-D registration milestone. This diagnostic evaluation checks point-to-point ICP (Iterative Closest Point) registration performance under varying controlled baseline distances on a TartanAir sequence.
 
 > **Important Note:** This diagnostic uses a single-sequence trajectory (e.g. from the Abandoned Factory sequence) as a diagnostic test case. It is not designed to be, nor should it be claimed to be, a comprehensive registration benchmark.
@@ -128,6 +130,22 @@ A primary observation from this diagnostic is that ICP registration can return *
 2. **Geometric Ambiguity (Aperture Problem):** In environments dominated by planar structures (such as walls, flat floors, or long corridors) or symmetric structures (such as pipes), there is a geometric degeneracy. The point cloud can slide along these planes without changing the point-to-point correspondence distance. ICP will converge with a low RMSE and high fitness because the points lie flat against each other, but the translation along the degenerate direction is unconstrained and will be incorrect.
 3. **Partial Overlap & FoV Mismatches:** For medium and long baselines, parts of the scene enter or exit the camera's field of view. The points in these non-overlapping regions do not have true physical correspondences in the target cloud. If the correspondence threshold is set too wide and no outlier filtering (like RANSAC) is applied, ICP will force these points to align with unrelated target surfaces. This produces a false alignment with high point proximity (low RMSE) but incorrect physical camera alignment (high SE(3) error).
 4. **Incorrect Calibration Assumptions:** Point unprojection depends on the camera intrinsic parameters ($f_x, f_y, c_x, c_y$). If the assumed intrinsics differ from the actual calibration used to generate the depth maps, the backprojected 3D geometries will be distorted (e.g., stretched, bent). ICP will align these distorted point clouds, yielding low RMSE in the distorted space, but the computed rigid transform will be physically incorrect, resulting in high translation and rotation errors against the ground-truth trajectory poses.
+
+### Current curated failure case
+
+~~~bash
+uv run python scripts/make_figures.py \
+  --figures geometry-icp tartanair-icp \
+  --output-dir figures/curated \
+  --tartanair-frame 1750 \
+  --tartanair-stride 5
+~~~
+
+The synthetic known-transform case recovers motion with 0.0004 m translation error and 0.006-degree rotation error. On the real frame-1750 to frame-1755 pair, nearest-neighbour residual improves from 0.210 m to 0.096 m and Open3D fitness is 0.991, but ground-truth translation error is 0.690 m on a 0.329 m baseline. The real visual is therefore labelled as a failure, not used as evidence of accurate odometry.
+
+![Synthetic ICP success](../figures/curated/geometry_icp_known_transform.png)
+
+![TartanAir ICP failure](../figures/curated/tartanair_icp_alignment.png)
 
 ---
 

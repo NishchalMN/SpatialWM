@@ -1,5 +1,7 @@
 # ICP: Iterative Closest Point Registration
 
+**Story position:** Stages 6–7, estimating relative motion from RGB-D or LiDAR point clouds. See [the complete 3D vision story](3d_vision_story.md).
+
 Iterative Closest Point (ICP) is a local optimization algorithm used to estimate the relative rigid transformation $T \in \text{SE}(3)$ (a $4 \times 4$ rotation and translation matrix) that best aligns a source point cloud $\mathcal{P}_s$ to a target (or destination) point cloud $\mathcal{P}_d$.
 
 Given a set of point correspondences, the algorithm iteratively solves for the transformation that minimizes the alignment error and updates the coordinates of the source point cloud. Because the correspondence matching step relies on local search (e.g., finding the nearest neighbor in the target cloud for each source point), ICP is a **local optimization method**. If the initial alignment (initialization $T_0$) is too far from the ground truth, the nearest-neighbor search will associate incorrect points, causing the algorithm to converge to a poor local minimum.
@@ -19,7 +21,7 @@ where $p_i \in \mathcal{P}_s$, $q_j \in \mathcal{P}_d$, and $\mathcal{C}$ is the
 This formulation minimizes the orthogonal distance from the transformed source points to the tangent planes at the corresponding target points:
 $$E(T) = \sum_{(i,j) \in \mathcal{C}} \left( (T p_i - q_j) \cdot n_j \right)^2$$
 where $n_j$ is the unit normal vector at the target point $q_j$.
-* **Advantage:** Point-to-plane allows points to slide along flat regions (e.g., walls, floors) without penalty. It typically converges significantly faster and is far more robust to geometric degeneracies than point-to-point.
+* **Advantage:** Point-to-plane usually converges faster on locally smooth surfaces because it penalizes displacement along the surface normal. Motion tangent to one plane remains weakly constrained, so point-to-plane does not remove planar degeneracy by itself.
 * **Disadvantage:** It requires reliable target surface normals. Noisy or misoriented normals degrade or ruin the optimization.
 
 ---
@@ -124,7 +126,7 @@ The production-grade backend relies on Open3D's optimized C++ registration modul
 **A:** Because it alternates between matching nearest neighbors and updating the transformation. If the initial alignment is poor, the nearest-neighbor search pairs incorrect points, causing the optimizer to converge to a local minimum.
 
 **Q: When does point-to-plane ICP outperform point-to-point?**
-**A:** Point-to-plane performs best in structured environments with flat surfaces (e.g., walls, floors). By projecting residuals onto surface normals, points can slide along flat surfaces without increasing the cost. This speeds up convergence and avoids local minima caused by planar slide geometry.
+**A:** Point-to-plane performs best when the target has reliable normals and locally smooth surfaces. The normal-direction residual often gives faster convergence, but motion along a single plane is still underconstrained; multiple surface orientations or other constraints are needed.
 
 **Q: What is a major failure mode of point-to-plane ICP?**
 **A:** It is highly dependent on target normals. If normals are not computed, are extremely noisy, or are flipped in random directions, the optimization direction becomes corrupted, causing the registration to diverge.

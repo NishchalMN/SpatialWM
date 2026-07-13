@@ -1,0 +1,15 @@
+{
+  "source_frame": 1750,
+  "target_frame": 1755,
+  "detector": "sift",
+  "keypoints_source": 965,
+  "keypoints_target": 1100,
+  "raw_matches": 965,
+  "ratio_matches": 508,
+  "mutual_matches": 481,
+  "ransac_inliers": 474,
+  "ransac_inlier_ratio": 0.9854469854469855,
+  "median_sampson_inliers": 0.006679995057404603,
+  "gt_baseline_m": 0.32937875197677097,
+  "gt_rotation_deg": 5.349910047717181
+}

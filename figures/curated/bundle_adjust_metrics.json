@@ -1,0 +1,12 @@
+{
+  "seed": 99,
+  "n_cameras": 5,
+  "n_points": 100,
+  "n_observations": 500,
+  "mean_reprojection_error_before_px": 60.59151744281763,
+  "mean_reprojection_error_after_px": 0.5111289374582686,
+  "median_reprojection_error_before_px": 57.02544058774563,
+  "median_reprojection_error_after_px": 0.4714097042625332,
+  "mean_error_improvement_factor": 118.54448653235302,
+  "gauge": "first camera pose and first point world-z fixed"
+}
