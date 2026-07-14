@@ -1,22 +1,14 @@
 # SpatialWM
 
 > A geometry-first multi-sensor 3D perception project that recovers motion and structure
-> from images, RGB-D, and LiDAR, then exposes geometry quality for controlled world-model
-> research.
+> from images, RGB-D, and LiDAR, then turns the estimates into auditable trajectories and maps.
 
-`main` is the portfolio-grade classical perception pipeline. Experimental predictors live on
-`research/world-model`; they are not presented as completed research.
+This README documents the portfolio-grade classical perception pipeline on `main`.
 
 ## What the project is trying to answer
 
-The engineering question is how calibrated sensor samples become defensible 3D structure,
-motion, and maps. The research question is:
-
-> When does explicit ego-motion improve visual prediction, and when does noisy or
-> overconfident geometry make it worse?
-
-That second question is meaningful only if pose estimates, transform directions, scale,
-confidence, and failure modes are measured first.
+How do calibrated sensor samples become defensible 3D structure, ego-motion, trajectories,
+and maps while keeping transform direction, scale, confidence, and failure modes explicit?
 
 ## The complete 3D story
 
@@ -30,8 +22,6 @@ calibration + poses    │                                ↓
                        └─ camera + Velodyne + OXTS
                               ├─ LiDAR→image calibration check
                               └─ scan-to-scan / submap odometry → ATE/RPE → BEV
-
-all estimators → PoseEstimate + confidence → B1 / T-GT / T-EST / T-NOISE / T-GATED
 ```
 
 Read [the stage-by-stage 3D vision story](docs/3d_vision_story.md) for the intuition,
@@ -139,22 +129,6 @@ uv run python scripts/evaluate_kitti_lidar.py \
 Raw data and generated manifests are not committed. Curated figures, JSON metrics, and compact
 NPZ reconstructions are versioned.
 
-## Research branch and claim boundary
-
-The geometry-quality experiment proceeds in a fixed order:
-
-| Condition | Motion input | Decision question |
-|---|---|---|
-| B1 | none | How predictable is the future from visual context alone? |
-| T-GT | ground-truth pose | Does ideal ego-motion add signal? |
-| T-EST | TartanAir SfM/RGB-D pose | Does the signal survive real error? |
-| T-NOISE | controlled pose corruption | Where does geometry stop helping? |
-| T-GATED | pose plus confidence | Can reliability-aware conditioning recover value? |
-
-B1 versus T-GT is the first GO/NO-GO experiment. KITTI LiDAR and TartanAir visual clips are
-separate validation tracks—not falsely described as one fused dataset. Read the
-[geometry-quality research bridge](docs/geometry_quality_bridge.md).
-
 ## Honest limitations
 
 - This is an offline, bounded pipeline, not production streaming infrastructure.
@@ -163,7 +137,7 @@ separate validation tracks—not falsely described as one fused dataset. Read th
 - ICP is point-to-point and does not remove dynamic objects.
 - LiDAR odometry has no global pose graph or loop closure.
 - GPS/IMU is validation ground truth, not a fused navigation estimator.
-- No novelty, state-of-the-art, benchmark-leader, or completed-paper claim is made.
+- No novelty, state-of-the-art, or benchmark-leader claim is made.
 
 The implementation uses mature OpenCV, Open3D, SciPy, NumPy, and pykitti components with
 repository-specific orchestration, transform contracts, tests, metrics, and inspected
@@ -181,4 +155,3 @@ visuals. It is not described as “from scratch.”
 - [ICP](docs/icp.md)
 - [TartanAir registration](docs/tartanair_registration.md)
 - [KITTI LiDAR odometry and BEV](docs/lidar_odometry_bev.md)
-- [Geometry-quality research bridge](docs/geometry_quality_bridge.md)
