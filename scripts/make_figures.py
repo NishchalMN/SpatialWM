@@ -940,7 +940,7 @@ def generate_tartanair_sfm(
     )
     observation_axis.set_title(
         f"Reference observations (frame {result.registered_image_indices[0]})\n"
-        f"{len(first_rows)} initialized landmarks",
+        f"{len(first_rows)} visible expanded-map landmarks",
         fontweight="bold",
     )
     observation_axis.axis("off")
@@ -1023,6 +1023,7 @@ def generate_tartanair_sfm(
     diagnostic_axis.set_ylabel("Reprojection RMSE [pixels]")
     diagnostic_axis.set_title(
         "Global refinement and track support\n"
+        f"{result.initial_landmark_count} initial → {len(result.points)} landmarks; "
         f"{len(result.observations)} observations; "
         f"median track length={np.median(result.track_lengths):.0f}",
         fontweight="bold",
@@ -1047,7 +1048,7 @@ def generate_tartanair_sfm(
     track_axis.grid(True, axis="y", linestyle=":", alpha=0.3)
 
     fig.suptitle(
-        "Minimal Sparse SfM on TartanAir: Images to Optimized 3D Structure\n"
+        "Incremental Sparse SfM on TartanAir: Images to Expanded 3D Structure\n"
         f"P000 frames {result.registered_image_indices[0]}-"
         f"{result.registered_image_indices[-1]} | initial pair relative indices "
         f"{result.initial_pair} | reprojection RMSE "
@@ -1060,7 +1061,7 @@ def generate_tartanair_sfm(
         0.5,
         0.015,
         "World-to-camera poses; arbitrary monocular scale aligned to GT only for trajectory "
-        "evaluation. Six-frame controlled diagnostic, not a benchmark.",
+        f"evaluation. {n_frames}-frame controlled diagnostic, not a benchmark.",
         ha="center",
         fontsize=10,
     )
@@ -1078,6 +1079,9 @@ def generate_tartanair_sfm(
         observations=result.observations,
         registered_image_indices=result.registered_image_indices,
         track_lengths=result.track_lengths,
+        initial_landmark_count=result.initial_landmark_count,
+        triangulation_sources=result.triangulation_sources,
+        landmark_confidence=result.landmark_confidence,
         intrinsics=K,
     )
     metrics_path = os.path.join(output_dir, "tartanair_sparse_sfm_metrics.json")
@@ -1093,6 +1097,8 @@ def generate_tartanair_sfm(
                 "pose_convention": "world-to-camera",
                 "scale_convention": "initial translation unit; monocular scale arbitrary",
                 "n_registered_cameras": len(result.poses_world_to_camera),
+                "initial_landmark_count": result.initial_landmark_count,
+                "new_landmark_count": len(result.points) - result.initial_landmark_count,
                 "n_points": len(result.points),
                 "n_observations": len(result.observations),
                 "median_track_length": float(np.median(result.track_lengths)),
@@ -1101,7 +1107,7 @@ def generate_tartanair_sfm(
                 "sim3_alignment_scale_to_gt": alignment_scale,
                 "sim3_aligned_ate_rmse_m": ate_rmse,
                 "interpretation": (
-                    "bounded six-frame integration diagnostic; the very short aligned "
+                    f"bounded {n_frames}-frame integration diagnostic; the short aligned "
                     "trajectory is not a benchmark result"
                 ),
             },

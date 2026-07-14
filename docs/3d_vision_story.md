@@ -12,19 +12,23 @@ The classical 3D portion is not preliminary busywork. It creates the geometry, e
 
 ```mermaid
 flowchart LR
-    A[Calibrated images] --> B[Features and matches]
+    U[Sensor manifests and calibration graph] --> A[Calibrated images]
+    U --> H[RGB + depth]
+    U --> L[Camera + LiDAR + OXTS]
+    A --> B[Features and matches]
     B --> C[RANSAC F / E]
     C --> D[Relative camera pose]
     D --> E[Triangulated 3D points]
     E --> F[Bundle adjustment]
     F --> G[Sparse multi-view reconstruction]
 
-    H[RGB + depth] --> I[3D point clouds]
+    H --> I[3D point clouds]
     I --> J[ICP registration]
     J --> K[Ground-truth SE3 error]
 
-    L[LiDAR scans] --> M[Voxel downsampling]
-    M --> N[Scan-to-scan ICP]
+    L --> V[LiDAR to camera projection]
+    L --> M[Voxel downsampling]
+    M --> N[Scan-to-scan and local-submap ICP]
     N --> O[Accumulated trajectory]
     O --> P[ATE / RPE and BEV]
 
@@ -46,15 +50,15 @@ There are three connected threads:
 
 | Stage | Core question | Repository component | Status |
 |---|---|---|---|
-| 0. Frames and calibration | What coordinate system is each number in? | `geometry/camera.py`, `geometry/tartanair.py` | Working |
+| 0. Ingestion, frames, calibration | What sensor, time, and coordinate frame is each number in? | `data/sensors.py`, `geometry/camera.py` | Working on TartanAir and KITTI |
 | 1. Correspondences | Which pixels describe the same physical point? | `geometry/features.py`, OpenCV matcher | Working on synthetic and TartanAir data |
 | 2. Robust two-view geometry | What camera motion explains the matches? | `geometry/ransac.py`, `geometry/two_view.py` | Working |
 | 3. Triangulation | Where is the matched point in 3D? | `geometry/two_view.py` | Working synthetically |
 | 4. Bundle adjustment | Which cameras and points best explain all images jointly? | `geometry/bundle_adjust.py` | Working synthetically; human review remains |
-| 5. Sparse SfM | Can the stages reconstruct one scene end to end? | `geometry/sfm_toy.py` | Working on a controlled six-frame TartanAir scene; human review remains |
+| 5. Sparse SfM | Can the stages reconstruct and expand one real scene? | `geometry/sfm_toy.py` | Working on a controlled 20-frame TartanAir scene; human review remains |
 | 6. RGB-D registration | Can direct depth recover relative motion? | `geometry/icp.py`, `geometry/tartanair.py` | Synthetic success and real failure are visually/quantitatively documented |
 | 7. LiDAR odometry and BEV | Can repeated 3D scans form a trajectory and map view? | `geometry/lidar_odometry.py`, `eval/trajectory.py`, `perception/voxelize.py` | Bounded numerical and visual gate complete; human review remains |
-| 8. World-model bridge | Does measured geometry improve future prediction? | `worldmodel/*` | Planned after classical closeout |
+| 8. World-model bridge | Does measured geometry improve future prediction? | `research/world-model` branch | Planned after portfolio release |
 
 ---
 
@@ -73,7 +77,7 @@ A camera performs two transformations:
 2. **Intrinsics** convert that camera-frame direction into pixel coordinates:
    `x ~ K X_cam`.
 
-After dividing by depth, the result is `(u, v)). With a depth value, the process can be reversed:
+After dividing by depth, the result is `(u, v)`. With a depth value, the process can be reversed:
 `X_cam = depth * K^-1 [u, v, 1]^T`.
 
 The dangerous detail is transform direction. A matrix that maps world to camera is not interchangeable with a camera-to-world pose. For world-to-camera `R, t`, the camera centre in world coordinates is `C = -R^T t`.
@@ -85,6 +89,8 @@ The dangerous detail is transform direction. A matrix that maps world to camera 
 - `transform_points(T, X)`
 - `camera_center(R, t)`
 - `parse_pose_to_transform(...)` and `derive_relative_transform(...)` in `geometry/tartanair.py`
+- `SensorFrame`, `SensorSequence`, and dataset adapters in `data/sensors.py`
+- a named KITTI `Velodyne → camera_02` calibration edge and projection check
 
 TartanAir poses are treated as camera-to-world poses after conversion to the documented OpenCV RDF camera convention. A source-to-target point transform is:
 
@@ -105,7 +111,7 @@ TartanAir poses are treated as camera-to-world poses after conversion to the doc
 - multiplying transforms in the wrong order;
 - projecting points behind the camera.
 
-Read: [Two-view geometry](two_view_geometry.md) and [TartanAir registration](tartanair_registration.md).
+Read: [Sensor ingestion](sensor_ingestion.md), [Two-view geometry](two_view_geometry.md), and [TartanAir registration](tartanair_registration.md).
 
 ---
 
@@ -299,7 +305,7 @@ Read: [Bundle adjustment](bundle_adjust.md).
 
 ---
 
-## Stage 5 — Minimal sparse Structure from Motion
+## Stage 5 — Incremental sparse Structure from Motion
 
 ### The question
 
@@ -326,9 +332,16 @@ This stage turns isolated algorithms into a system. It also exposes data associa
 - `points: (N, 3)`;
 - world-to-camera `poses: (M, 4, 4)`.
 
-`run_sfm_detailed(...)` additionally returns observations, registered image indices, track lengths, initial-pair metadata, and before/after reprojection RMSE. The implementation selects a verified initial pair, triangulates its positive-depth landmarks, registers additional views with PnP RANSAC, and globally refines cameras and points with bundle adjustment.
+`run_sfm_detailed(...)` additionally returns observations, registered image indices, track
+lengths, triangulation sources, landmark confidence, initial-pair metadata, and before/after
+reprojection RMSE. It selects a verified initial pair, registers nearby views with PnP
+RANSAC, triangulates unmatched tracks after pose recovery, and globally refines cameras and
+points with bundle adjustment.
 
-The controlled P000 frames 1750–1755 diagnostic registers all six cameras and reconstructs 467 landmarks from 2,277 observations. BA reduces reprojection RMSE from 0.773 px to 0.178 px. Points, poses, observations, metrics, and the inspected figure are saved reproducibly. The deliberately minimal map does not yet triangulate new landmarks after initialization; later views extend the initial landmark tracks.
+The controlled P000 frames 1750–1769 diagnostic registers all 20 cameras, grows from 416
+initial landmarks to 2,963 landmarks across 12,457 observations, and reduces reprojection
+RMSE from 0.661 px to 0.177 px. Points, poses, tracks, sources, confidence, metrics, and the
+inspected figure are saved reproducibly.
 
 COLMAP can later act as a reference baseline; integrating it is not a substitute for understanding this transparent pipeline.
 
@@ -349,7 +362,7 @@ COLMAP can later act as a reference baseline; integrating it is not a substitute
 - scale or pose conventions change between stages;
 - BA absorbs wrong correspondences instead of fixing them.
 
-Read: [Minimal sparse Structure from Motion](sparse_sfm.md).
+Read: [Incremental sparse Structure from Motion](sparse_sfm.md).
 
 ---
 
@@ -420,7 +433,8 @@ A LiDAR scan is already a metric 3D point cloud. The baseline:
 4. compose each relative transform into a global pose;
 5. compare the estimated path with ground truth.
 
-If each step contains a small error, composing many steps compounds the error into drift. Scan-to-map methods and global optimization reduce drift, but the project first needs a transparent scan-to-scan baseline.
+If each step contains a small error, composing many steps compounds the error into drift. The
+project compares the transparent scan-to-scan baseline with a bounded five-scan submap.
 
 ATE measures global trajectory disagreement after an allowed alignment. RPE measures local relative-motion disagreement over a selected step interval. They answer different questions: “where did the whole trajectory end up?” versus “how wrong was each motion increment?”
 
@@ -429,12 +443,16 @@ BEV collapses the 3D scan onto a top-down occupancy grid. It provides an intuiti
 ### Repository implementation
 
 - `load_kitti_bin(...)`, `load_kitti_points(...)` in `perception/lidar_io.py`
-- `voxel_downsample(...)`, `lidar_odometry(...)` in `geometry/lidar_odometry.py`
+- `voxel_downsample(...)`, `lidar_odometry(...)`, and `lidar_odometry_detailed(...)` in `geometry/lidar_odometry.py`
 - `umeyama(...)`, `ate(...)`, `rpe(...)` in `eval/trajectory.py`
 - `voxelize(...)`, `bev(...)` in `perception/voxelize.py`
 - `scripts/evaluate_kitti_lidar.py`
 
-The bounded 10-frame KITTI diagnostic reports rigid-aligned ATE RMSE `0.093881 m` with metric scale fixed, raw final position error `0.320387 m`, mean one-step translation error `0.061191 m`, and mean one-step rotation error `0.107873 deg`. A free Sim(3) fit would report `0.048072 m` but rescales the metric trajectory by `0.917`, so it is not used as the primary LiDAR claim. This confirms a local pipeline, not full KITTI benchmark performance.
+On 100 KITTI frames, scan-to-scan reports `0.318 m` rigid-aligned ATE, `1.264 m`
+raw endpoint error, and `0.049 m / 0.098 deg` mean one-step error. The local submap lowers
+mean one-step translation error to `0.036 m` and ICP RMSE to `0.158 m`, but worsens ATE to
+`0.485 m`. This is evidence that local fit quality does not guarantee global trajectory
+quality.
 
 ### Proof that this stage is done
 
@@ -443,7 +461,7 @@ The bounded 10-frame KITTI diagnostic reports rigid-aligned ATE RMSE `0.093881 m
 - ATE/RPE definitions, alignment policy, units, and sequence length stated;
 - BEV occupancy from the same sensor story;
 - drift or registration quality plotted over time;
-- known limitations: no loop closure, no scan-to-map, bounded sequence.
+- known limitations: no loop closure or global pose graph; bounded sequence.
 
 ### Common failures
 
@@ -487,6 +505,10 @@ Start only with B1 versus T-GT on a small fixed clip set. If perfect pose does n
 - Failure metrics can become confidence inputs for T-GATED.
 - BEV/depth can serve as interpretable probes, rather than relying only on latent loss.
 - Motion bins and trajectory metrics define meaningful evaluation slices.
+
+TartanAir and KITTI remain separate experimental tracks. T-EST for a TartanAir visual model
+must come from TartanAir SfM/RGB-D motion, not unrelated KITTI LiDAR. See the
+[geometry-quality bridge](geometry_quality_bridge.md).
 
 ### GO/NO-GO gate
 

@@ -1,150 +1,126 @@
-# KITTI LiDAR Odometry, Trajectory Error, and BEV
+# KITTI LiDAR Odometry, Local Submaps, and BEV
 
-**Story position:** Stage 7. This closes the classical 3D sensor story after image-based sparse SfM and RGB-D registration. See [the complete 3D vision story](3d_vision_story.md).
+**Story position:** Stage 7. This closes the classical sensor path after image-based SfM and
+RGB-D registration. See [the complete 3D vision story](3d_vision_story.md).
 
-## What this stage demonstrates
+## Data and transform contract
 
-The bounded KITTI path answers three connected questions:
+The diagnostic uses KITTI raw `2011_09_26_drive_0005_sync`, frames 0–99.
 
-1. Can consecutive metric LiDAR scans be registered into relative motion?
-2. What happens when those local motions are composed into a trajectory?
-3. Can the same registered point clouds produce an interpretable bird's-eye-view occupancy map?
+- Velodyne points are metric `X forward, Y left, Z up`.
+- Estimated `P_k` maps scan `k` into the scan-0 world frame; `P_0 = I`.
+- OXTS IMU poses are calibrated into Velodyne coordinates and normalized to frame 0.
+- OXTS is evaluation ground truth, not an ICP input.
 
-The implementation intentionally remains a transparent scan-to-scan baseline. It is useful precisely because its drift is visible and explainable; it is not presented as a modern production odometry system.
+For scan-to-scan ICP, `T_(k+1→k)` maps the newer source scan to the previous target scan:
 
-## Data and coordinate contract
+`P_(k+1) = P_k @ T_(k+1→k)`.
 
-The diagnostic uses KITTI raw sequence `2011_09_26_drive_0005_sync`, frames 0–9.
+The estimator uses the previous accepted relative transform as a constant-velocity
+initialization after the first pair.
 
-- Velodyne points are loaded from KITTI `.bin` files as `(x, y, z)` metres.
-- KITTI Velodyne axes are `X forward`, `Y left`, `Z up`.
-- Estimated pose `P_k` maps points from scan `k` into the scan-0 frame.
-- `P_0 = I`.
-- OXTS IMU poses are converted to Velodyne poses using the supplied calibration and normalized into the same initial frame.
+## Two odometry variants
 
-For every consecutive pair, Open3D ICP estimates a transform from scan `k+1` to scan `k`. Global poses are composed as:
+### Scan-to-scan baseline
 
-`P_(k+1) = P_k @ T_(k+1 to k)`.
+Every 0.20 m voxel-downsampled scan registers directly to its predecessor with point-to-point
+Open3D ICP, a 1.0 m correspondence threshold, and 50 iterations. It is simple and local, so
+small errors compound through pose composition.
 
-This multiplication order matters. Reversing `T` or composing on the wrong side produces a plausible-looking but physically incorrect path.
+### Scan-to-submap experiment
 
-## Processing pipeline
+The current scan is transformed using a constant-velocity global prediction. A target submap
+is built from the five most recent accepted scans transformed into frame 0, downsampled at
+0.30 m, and bounded in size. ICP estimates a correction in the world frame:
 
-1. Load ten Velodyne scans and OXTS/calibration data with `pykitti`.
-2. Voxel-downsample each scan at 0.20 m.
-3. Register scan `k+1` to scan `k` with point-to-point ICP, a 1.0 m correspondence limit, and 50 iterations.
-4. Reject non-finite or very-low-fitness registrations.
-5. Compose the nine relative transforms into ten global poses.
-6. Compare the path with normalized OXTS ground truth.
-7. Transform the scans into frame 0 and rasterize boolean 0.10 m BEV occupancy.
+`P_(k+1) = correction @ predicted_P_(k+1)`.
 
-## Metric policy and corrected interpretation
+No loop closure, global pose graph, semantic filtering, or OXTS prior is used.
 
-LiDAR measures distance in metres, so the primary trajectory metric must not be allowed to rescale the estimate. The curated result reports rigid-aligned ATE with scale fixed to one.
+## 100-frame result
 
-| Measurement | Result |
-|---|---:|
-| Frames | 10 |
-| Raw position RMSE | 0.177 m |
-| Rigid-aligned ATE RMSE, no scale | 0.094 m |
-| Raw final position error | 0.320 m |
-| Mean one-step translation error | 0.061 m |
-| Mean one-step rotation error | 0.108 deg |
-| Maximum one-step translation error | 0.098 m |
-| Maximum one-step rotation error | 0.192 deg |
+LiDAR is already metric, so primary ATE uses rigid alignment with scale fixed to one.
 
-A previous project note quoted `0.048 m` ATE. That value came from a free Sim(3) alignment which scaled the estimated metric path by `0.917`. It remains useful as a diagnostic, but it is not the primary LiDAR claim because it hides an 8.3% scale discrepancy. The honest portfolio number is the `0.094 m` rigid-aligned ATE, alongside the raw and relative errors.
-
-![KITTI LiDAR odometry trajectory and error](../figures/curated/kitti_lidar_odometry.png)
-
-The trajectory figure shows three complementary views:
-
-- rigid-aligned estimated and GT paths with no scale adjustment;
-- per-frame position disagreement, exposing accumulated drift;
-- one-step translation and rotation errors, exposing local registration quality.
-
-ATE answers how far the whole trajectory disagrees after the stated global alignment. RPE answers how wrong each local motion increment is. A method can have reasonable RPE and still accumulate visible global drift.
-
-## BEV occupancy
-
-`bev(points, cell)` projects 3D points into boolean XY occupancy:
-
-- rows correspond to the Y axis, with maximum Y at the top;
-- columns correspond to X, increasing left to right;
-- a cell is occupied if at least one retained 3D point falls inside it.
-
-The curated artifact applies identical `X/Y` limits, a `Z` crop of `[-2.5, 1.5] m`, and 0.10 m cells to both panels.
-
-| BEV measurement | Single scan | Ten-scan accumulated map |
+| Measurement | Scan-to-scan | Scan-to-submap |
 |---|---:|---:|
-| Cropped/transformed points | 79,471 | 851,528 |
-| Occupied cells | 22,387 | 79,725 |
+| Rigid-aligned ATE RMSE | **0.318 m** | 0.485 m |
+| Raw final position error | **1.264 m** | 1.588 m |
+| Mean one-step translation error | 0.049 m | **0.036 m** |
+| Mean one-step rotation error | 0.098 deg | **0.085 deg** |
+| Mean ICP fitness | 0.988 | **0.997** |
+| Mean ICP inlier RMSE | 0.197 m | **0.158 m** |
+
+![KITTI scan-to-scan versus scan-to-submap odometry](../figures/curated/kitti_lidar_odometry.png)
+
+The result is deliberately not simplified into “submaps are better.” The local submap gives
+better one-step errors and internal ICP diagnostics, but worse global ATE and endpoint drift.
+Repeatedly fitting a locally self-consistent map can reinforce small systematic bias. It also
+shows why fitness and inlier RMSE are confidence features, not substitutes for ground truth.
+
+The portfolio trajectory therefore remains scan-to-scan. The submap path is a documented
+sensitivity experiment and a useful geometry-quality case for the research branch.
+
+## BEV return-density map
+
+All 100 scans are transformed by the primary scan-to-scan trajectory, cropped to
+`X=[-5,50] m`, `Y=[-22,22] m`, `Z=[-2.5,1.5] m`, and rasterized into 0.10 m cells. The figure
+shows `log(1 + return count)` so both sparse scan rings and dense accumulated surfaces remain
+visible.
 
 ![KITTI single-scan and accumulated BEV](../figures/curated/kitti_lidar_bev.png)
 
-The single scan exposes the radial Velodyne sampling pattern and scene surfaces. Accumulating scans fills more cells and extends spatial coverage, but every pose error is also written into the map. Dense occupancy is therefore not proof of accurate registration.
+The accumulated map contains 9,660,016 cropped/transformed points. Increased density and
+coverage are visually useful, but they are not a map-accuracy metric because every pose error
+is written into the raster.
 
 ## Reproduce
 
 ```bash
-uv run pytest -q \
-  tests/test_lidar_io.py tests/test_lidar_odometry.py \
-  tests/test_trajectory.py tests/test_voxelize.py \
-  tests/test_evaluate_kitti_lidar.py
-
+uv run python scripts/download_kitti_slice.py \
+  --frames 100 --output-dir data/raw/kitti --max-gb 1.0 --download
 uv run python scripts/evaluate_kitti_lidar.py \
   --kitti-root data/raw/kitti \
-  --frames 10 \
+  --frames 100 \
   --voxel 0.2 \
   --max-correspondence-distance 1.0 \
   --max-iters 50 \
   --output-dir figures/curated
 ```
 
-Outputs:
+The NPZ stores GT, scan-to-scan, and scan-to-submap trajectories. The JSON records both metric
+sets and every registration's fitness, RMSE, point counts, and correction magnitude.
 
-- `figures/curated/kitti_lidar_odometry.png`;
-- `figures/curated/kitti_lidar_bev.png`;
-- `figures/curated/kitti_lidar_metrics.json`;
-- `figures/curated/kitti_lidar_trajectory.npz`.
+## Limitations and next improvements
 
-Raw KITTI data is not committed.
+- Point-to-point ICP does not model surface normals.
+- Dynamic objects, ground, vegetation, and distant returns are not filtered or weighted.
+- A five-scan submap can preserve systematic local bias.
+- There is no loop detection or global optimization.
+- This bounded raw slice is not a KITTI odometry benchmark submission.
+- BEV represents return density, not height, semantics, free space, or uncertainty.
 
-## What the baseline does not solve
-
-- Point-to-point ICP uses no surface normals or learned features.
-- Identity initialization assumes small consecutive motion.
-- Scan-to-scan matching does not use a persistent local map.
-- There is no loop closure or global pose-graph optimization.
-- Dynamic objects are not removed.
-- Ground, vegetation, and distant returns are not weighted differently.
-- A ten-frame raw slice cannot establish full-sequence or benchmark performance.
-- BEV is boolean occupancy only; it does not encode height, density, intensity, semantics, or uncertainty.
-
-The most meaningful classical extension would be a longer sequence with scan-to-map registration and pose-graph refinement. It is optional for the current portfolio because the bounded baseline already demonstrates sensing, registration, transform composition, metric evaluation, drift, and spatial rasterization.
+A stronger mapping release would add point-to-plane/generalized ICP, motion-aware filtering,
+keyframes, loop closure, and pose-graph optimization, then evaluate a longer standard split.
 
 ## Interview Q&A
 
-**Why register scan `k+1` to scan `k`?**  
-It returns a transform that expresses the newer scan in the previous scan's coordinates. Composing that transform with the previous global pose places the new scan in the scan-0 map frame.
+**Why register `k+1` to `k`?**  It produces the source-to-target transform needed to express
+the new scan in the already established scan-0 map frame.
 
-**Why does scan-to-scan odometry drift?**  
-Every relative transform contains translation and rotation error. Composition multiplies those errors through time, and there is no global constraint that revisits earlier poses.
+**Why can local RPE improve while global ATE worsens?**  A method can make each local fit
+smoother while introducing a small directional bias. Composition accumulates that bias, and
+rigid alignment cannot remove its changing shape.
 
-**What is the difference between ATE and RPE?**  
-ATE measures global trajectory disagreement after an explicitly stated alignment. RPE compares relative motion over a selected frame gap and reflects local odometry quality.
+**Why must LiDAR ATE forbid free scale?**  LiDAR directly measures metres. Sim(3) scaling
+would hide an estimator error the sensor should preserve.
 
-**Why must LiDAR ATE avoid free scale?**  
-LiDAR is already metric. Allowing a similarity alignment to rescale the estimated trajectory can hide a scale error that the sensor and algorithm should preserve.
+**What is the constant-velocity initialization?**  The last accepted relative transform is
+used as the next ICP starting guess. It widens the practical convergence basin without using
+ground truth.
 
-**Why voxel-downsample before ICP?**  
-It reduces runtime and partially equalizes nonuniform point density. The voxel size trades detail for speed and registration stability.
+**Why bound the submap?**  Runtime and memory otherwise grow with the sequence, and distant
+old geometry is less relevant to current overlap.
 
-**What does the ICP correspondence threshold control?**  
-It defines the convergence basin and which nearest-neighbour pairs contribute. Too small rejects correct pairs before alignment; too large admits unrelated geometry and moving objects.
-
-**Why can a BEV map look dense even if odometry is wrong?**  
-Occupancy only records whether transformed points land in cells. Small pose errors can smear surfaces while still increasing occupied-cell count, so a dense map needs trajectory or map-quality validation.
-
-**How would you improve this baseline?**  
-Use a motion-model initialization, point-to-plane or generalized ICP, ground/dynamic filtering, scan-to-submap registration, and pose-graph optimization with loop closure, then evaluate full-sequence drift under a fixed alignment policy.
+**Why is high fitness not proof of correct motion?**  Fitness measures overlap under the
+estimated local alignment. A biased local map can overlap well while the global trajectory
+drifts.

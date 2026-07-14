@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 import matplotlib
@@ -17,9 +18,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from spatialwm.eval.trajectory import umeyama
-from spatialwm.geometry.lidar_odometry import lidar_odometry
+from spatialwm.geometry.lidar_odometry import lidar_odometry_detailed
 from spatialwm.perception.lidar_io import load_kitti_points
-from spatialwm.perception.voxelize import bev
 
 
 def validate_kitti_data(kitti_root: str, date: str, drive: str, num_frames: int) -> None:
@@ -525,19 +525,20 @@ def _plot_bev_grid(
     y_range: tuple[float, float],
     title: str,
 ) -> int:
-    """Rasterize and display boolean BEV occupancy with metric axes."""
-    occupancy = bev(points, cell=cell)
-    extent = [
-        float(np.min(points[:, 0])),
-        float(np.max(points[:, 0])),
-        float(np.min(points[:, 1])),
-        float(np.max(points[:, 1])),
-    ]
+    """Rasterize fixed-axis BEV return density with metric axes."""
+    x_bins = max(1, int(np.ceil((x_range[1] - x_range[0]) / cell)))
+    y_bins = max(1, int(np.ceil((y_range[1] - y_range[0]) / cell)))
+    counts, _, _ = np.histogram2d(
+        points[:, 0],
+        points[:, 1],
+        bins=(x_bins, y_bins),
+        range=(x_range, y_range),
+    )
     axis.imshow(
-        occupancy,
-        cmap="binary",
-        origin="upper",
-        extent=extent,
+        np.log1p(counts.T),
+        cmap="magma",
+        origin="lower",
+        extent=[*x_range, *y_range],
         interpolation="nearest",
         aspect="equal",
     )
@@ -547,7 +548,7 @@ def _plot_bev_grid(
     axis.set_ylabel("Y left [m]")
     axis.set_title(title, fontweight="bold")
     axis.grid(True, linestyle=":", alpha=0.25)
-    return int(np.count_nonzero(occupancy))
+    return int(np.count_nonzero(counts))
 
 
 def generate_bev_figure(
@@ -590,7 +591,7 @@ def generate_bev_figure(
         x_range=x_range,
         y_range=y_range,
         title=(
-            f"Ten scans accumulated with estimated poses\n"
+            f"{len(scans)} scans accumulated with estimated poses\n"
             f"{len(accumulated_points):,} transformed points"
         ),
     )
@@ -610,8 +611,8 @@ def generate_bev_figure(
     axes[1].legend(loc="upper right")
 
     fig.suptitle(
-        "KITTI LiDAR to Bird's-Eye-View Occupancy\n"
-        f"Boolean {cell:.2f} m cells, X/Y fixed to identical metric limits, "
+        "KITTI LiDAR to Bird's-Eye-View Return Density\n"
+        f"log(1 + returns) in {cell:.2f} m cells, identical metric limits, "
         "Z crop [-2.5, 1.5] m",
         fontsize=14,
         fontweight="bold",
@@ -619,8 +620,8 @@ def generate_bev_figure(
     fig.text(
         0.5,
         0.025,
-        "The accumulated map becomes denser but also inherits every scan-to-scan pose error; "
-        "no loop closure, scan-to-map refinement, or semantic filtering is used.",
+        "The accumulated map becomes denser but inherits local pose errors; the displayed "
+        "trajectory is the primary scan-to-scan estimate without loop closure or semantics.",
         ha="center",
         fontsize=10,
     )
@@ -635,6 +636,78 @@ def generate_bev_figure(
         "accumulated_cropped_points": len(accumulated_points),
         "accumulated_occupied_cells": accumulated_cells,
     }
+
+
+def generate_odometry_comparison_figure(
+    poses_scan: np.ndarray,
+    poses_submap: np.ndarray,
+    poses_gt: np.ndarray,
+    metrics_scan: dict[str, float],
+    metrics_submap: dict[str, float],
+    diagnostics_scan: list[dict],
+    diagnostics_submap: list[dict],
+    output_path: str,
+) -> matplotlib.figure.Figure:
+    """Compare both odometry variants with identical trajectory axes."""
+    aligned_scan, gt = _align_centres_rigid(poses_scan, poses_gt)
+    aligned_submap, _ = _align_centres_rigid(poses_submap, poses_gt)
+    scan_errors = np.linalg.norm(aligned_scan - gt, axis=1)
+    submap_errors = np.linalg.norm(aligned_submap - gt, axis=1)
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+
+    all_xy = np.vstack((gt[:, :2], aligned_scan[:, :2], aligned_submap[:, :2]))
+    x_limits = (all_xy[:, 0].min() - 0.25, all_xy[:, 0].max() + 0.25)
+    y_limits = (all_xy[:, 1].min() - 0.25, all_xy[:, 1].max() + 0.25)
+    for axis, estimated, title, metrics, colour in [
+        (axes[0, 0], aligned_scan, "Scan-to-scan", metrics_scan, "#4361ee"),
+        (axes[0, 1], aligned_submap, "Scan-to-submap", metrics_submap, "#ef476f"),
+    ]:
+        axis.plot(gt[:, 0], gt[:, 1], "k-", linewidth=2.5, label="OXTS GT")
+        axis.plot(estimated[:, 0], estimated[:, 1], color=colour, label=title)
+        axis.set_xlim(x_limits)
+        axis.set_ylim(y_limits)
+        axis.set_aspect("equal", adjustable="box")
+        axis.set_title(
+            f"{title}\nRigid ATE={metrics['rigid_aligned_ate_rmse_m']:.3f} m; "
+            f"raw endpoint={metrics['final_raw_position_error_m']:.3f} m",
+            fontweight="bold",
+        )
+        axis.set_xlabel("X [m]")
+        axis.set_ylabel("Y [m]")
+        axis.grid(True, linestyle=":", alpha=0.4)
+        axis.legend()
+
+    frames = np.arange(len(scan_errors))
+    axes[1, 0].plot(frames, scan_errors, label="Scan-to-scan", color="#4361ee")
+    axes[1, 0].plot(frames, submap_errors, label="Scan-to-submap", color="#ef476f")
+    axes[1, 0].set_xlabel("Frame")
+    axes[1, 0].set_ylabel("Rigid-aligned position error [m]")
+    axes[1, 0].set_title("Drift over the identical frame range", fontweight="bold")
+    axes[1, 0].grid(True, linestyle=":", alpha=0.4)
+    axes[1, 0].legend()
+
+    scan_fitness = [item["fitness"] for item in diagnostics_scan]
+    submap_fitness = [item["fitness"] for item in diagnostics_submap]
+    axes[1, 1].plot(frames[1:], scan_fitness, label="Scan-to-scan", color="#4361ee")
+    axes[1, 1].plot(frames[1:], submap_fitness, label="Scan-to-submap", color="#ef476f")
+    axes[1, 1].set_ylim(0.0, 1.02)
+    axes[1, 1].set_xlabel("Source frame")
+    axes[1, 1].set_ylabel("ICP fitness")
+    axes[1, 1].set_title("Registration confidence signal", fontweight="bold")
+    axes[1, 1].grid(True, linestyle=":", alpha=0.4)
+    axes[1, 1].legend()
+
+    fig.suptitle(
+        f"KITTI LiDAR Odometry: Local Pairwise Registration vs Bounded Submap "
+        f"({len(poses_gt)} frames)\nMetric scale fixed; no loop closure or pose graph",
+        fontsize=14,
+        fontweight="bold",
+    )
+    fig.subplots_adjust(top=0.88, bottom=0.07, hspace=0.38, wspace=0.12)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    return fig
 
 
 def positive_integer(value):
@@ -746,19 +819,33 @@ def main() -> None:
     poses_gt = normalize_poses(T_w_velo)
 
     # 5. Run LiDAR odometry (estimating trajectories)
-    print("Running LiDAR odometry estimation...")
+    print("Running scan-to-scan and scan-to-submap LiDAR odometry...")
     scans = [load_kitti_points(p) for p in dataset.velo_files]
-    poses_est = lidar_odometry(
+    scan_result = lidar_odometry_detailed(
         scans,
+        method="scan_to_scan",
         voxel=args.voxel,
         max_iters=args.max_iters,
         max_correspondence_distance=args.max_correspondence_distance,
     )
+    submap_result = lidar_odometry_detailed(
+        scans,
+        method="scan_to_submap",
+        voxel=args.voxel,
+        max_iters=args.max_iters,
+        max_correspondence_distance=args.max_correspondence_distance,
+        submap_size=5,
+        submap_voxel=max(args.voxel, 0.3),
+    )
+    poses_scan = scan_result.poses_scan_to_world
+    poses_submap = submap_result.poses_scan_to_world
+    poses_est = poses_scan
 
     # 6. Compute metrics
     print("Computing ATE and RPE trajectory errors...")
     try:
         metrics = compute_metrics(poses_est, poses_gt)
+        metrics_submap = compute_metrics(poses_submap, poses_gt)
     except ValueError as e:
         print(f"Error computing trajectory metrics: {e}", file=sys.stderr)
         sys.exit(1)
@@ -772,12 +859,17 @@ def main() -> None:
     trajectory_path = os.path.join(args.output_dir, "kitti_lidar_odometry.png")
     bev_path = os.path.join(args.output_dir, "kitti_lidar_bev.png")
     print(f"Generating trajectory figure at: {trajectory_path}")
-    generate_trajectory_figure(
-        poses_est=poses_est,
-        poses_gt=poses_gt,
-        metrics=metrics,
-        frame_ids=list(range(args.frames)),
-        output_path=trajectory_path,
+    diagnostics_scan = [asdict(item) for item in scan_result.diagnostics]
+    diagnostics_submap = [asdict(item) for item in submap_result.diagnostics]
+    generate_odometry_comparison_figure(
+        poses_scan,
+        poses_submap,
+        poses_gt,
+        metrics,
+        metrics_submap,
+        diagnostics_scan,
+        diagnostics_submap,
+        trajectory_path,
     )
     print(f"Generating BEV figure at: {bev_path}")
     _, bev_metrics = generate_bev_figure(
@@ -793,6 +885,8 @@ def main() -> None:
     np.savez_compressed(
         npz_path,
         poses_estimated=poses_est,
+        poses_scan_to_scan=poses_scan,
+        poses_scan_to_submap=poses_submap,
         poses_ground_truth=poses_gt,
         frame_ids=np.arange(args.frames, dtype=np.int64),
     )
@@ -801,9 +895,8 @@ def main() -> None:
 
     limitations = (
         "Diagnostic-only evaluation on a short raw slice; does not represent a full "
-        "benchmark. Drift accumulates because frame-to-frame registrations compose "
-        "multiplicatively without loop closure, scan-to-map registration, or global "
-        "pose-graph optimization."
+        "benchmark. A five-scan local submap bounds registration context, but drift still "
+        "accumulates without loop closure or global pose-graph optimization."
     )
 
     report_data = {
@@ -823,6 +916,22 @@ def main() -> None:
             "rpe_delta_frames": 1,
         },
         "metrics": metrics,
+        "method_comparison": {
+            "scan_to_scan": metrics,
+            "scan_to_submap": metrics_submap,
+            "scan_to_submap_improves_primary_ate": (
+                metrics_submap["rigid_aligned_ate_rmse_m"]
+                < metrics["rigid_aligned_ate_rmse_m"]
+            ),
+            "scan_to_submap_improves_raw_endpoint": (
+                metrics_submap["final_raw_position_error_m"]
+                < metrics["final_raw_position_error_m"]
+            ),
+        },
+        "registration_diagnostics": {
+            "scan_to_scan": diagnostics_scan,
+            "scan_to_submap": diagnostics_submap,
+        },
         "bev": bev_metrics,
         "limitations": limitations,
     }

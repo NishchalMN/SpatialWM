@@ -7,7 +7,35 @@ trajectory.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
+
+
+@dataclass(frozen=True)
+class LidarRegistrationDiagnostic:
+    """Per-frame registration evidence for drift and confidence analysis."""
+
+    source_index: int
+    target_index: int
+    method: str
+    fitness: float
+    inlier_rmse_m: float
+    source_points: int
+    target_points: int
+    correction_translation_m: float
+    correction_rotation_deg: float
+
+
+@dataclass(frozen=True)
+class LidarOdometryResult:
+    """Metric LiDAR trajectory and registration diagnostics."""
+
+    poses_scan_to_world: np.ndarray
+    diagnostics: tuple[LidarRegistrationDiagnostic, ...]
+    method: str
+    voxel_m: float
+    submap_size: int
 
 
 def voxel_downsample(points: np.ndarray, voxel: float = 0.2) -> np.ndarray:
@@ -74,7 +102,23 @@ def lidar_odometry(
     Returns:
         (K,4,4) array of global SE(3) poses, one per scan (P_0 = identity).
     """
-    from spatialwm.geometry.icp import register_point_clouds
+    return lidar_odometry_detailed(
+        scans,
+        method="scan_to_scan",
+        voxel=voxel,
+        max_iters=max_iters,
+        max_correspondence_distance=max_correspondence_distance,
+        min_fitness=min_fitness,
+    ).poses_scan_to_world
+
+
+def _validate_odometry_inputs(
+    scans: list[np.ndarray],
+    voxel: float,
+    max_iters: int,
+    max_correspondence_distance: float,
+    min_fitness: float,
+) -> None:
 
     if not isinstance(scans, (list, tuple)):
         raise TypeError("scans must be a list or tuple of numpy arrays")
@@ -99,41 +143,142 @@ def lidar_odometry(
     if not (0.0 <= min_fitness <= 1.0):
         raise ValueError("min_fitness must be between 0.0 and 1.0 inclusive")
 
-    # Downsample each scan
+
+def _transform_points(points: np.ndarray, transform: np.ndarray) -> np.ndarray:
+    return points @ transform[:3, :3].T + transform[:3, 3]
+
+
+def _rotation_angle_deg(transform: np.ndarray) -> float:
+    cosine = np.clip((np.trace(transform[:3, :3]) - 1.0) / 2.0, -1.0, 1.0)
+    return float(np.degrees(np.arccos(cosine)))
+
+
+def lidar_odometry_detailed(
+    scans: list[np.ndarray],
+    *,
+    method: str = "scan_to_scan",
+    voxel: float = 0.2,
+    max_iters: int = 50,
+    max_correspondence_distance: float = 1.0,
+    min_fitness: float = 0.1,
+    submap_size: int = 5,
+    submap_voxel: float = 0.3,
+    max_submap_points: int = 120_000,
+) -> LidarOdometryResult:
+    """Estimate scan-to-world poses using pairwise or local-submap ICP.
+
+    ``scan_to_scan`` registers each scan against its predecessor.  ``scan_to_submap``
+    predicts the next global pose with a constant-velocity model, transforms the
+    current scan into the world frame, then estimates a bounded correction against
+    the last ``submap_size`` accepted scans.
+    """
+    from spatialwm.geometry.icp import register_point_clouds
+
+    _validate_odometry_inputs(
+        scans, voxel, max_iters, max_correspondence_distance, min_fitness
+    )
+    if method not in {"scan_to_scan", "scan_to_submap"}:
+        raise ValueError("method must be scan_to_scan or scan_to_submap")
+    if not isinstance(submap_size, (int, np.integer)) or submap_size < 1:
+        raise ValueError("submap_size must be a positive integer")
+    if submap_voxel <= 0.0:
+        raise ValueError("submap_voxel must be positive")
+    if not isinstance(max_submap_points, (int, np.integer)) or max_submap_points < 3:
+        raise ValueError("max_submap_points must be an integer >= 3")
+
     downsampled_scans = [voxel_downsample(scan, voxel) for scan in scans]
-
-    K = len(scans)
-    poses = np.zeros((K, 4, 4))
+    poses = np.zeros((len(scans), 4, 4), dtype=np.float64)
     poses[0] = np.eye(4)
+    diagnostics: list[LidarRegistrationDiagnostic] = []
 
-    current_pose = np.eye(4)
-    for k in range(K - 1):
-        reg_result = register_point_clouds(
-            src=downsampled_scans[k + 1],
-            dst=downsampled_scans[k],
-            max_correspondence_distance=max_correspondence_distance,
-            max_iters=max_iters,
-        )
-        T_k = reg_result.transformation
+    for k in range(len(scans) - 1):
+        if k == 0:
+            relative_prediction = np.eye(4)
+        else:
+            relative_prediction = np.linalg.inv(poses[k - 1]) @ poses[k]
+
+        if method == "scan_to_scan":
+            source = downsampled_scans[k + 1]
+            target = downsampled_scans[k]
+            reg_result = register_point_clouds(
+                src=source,
+                dst=target,
+                max_correspondence_distance=max_correspondence_distance,
+                max_iters=max_iters,
+                init=relative_prediction,
+            )
+            step_transform = reg_result.transformation
+            next_pose = poses[k] @ step_transform
+            correction = step_transform @ np.linalg.inv(relative_prediction)
+            target_index = k
+        else:
+            predicted_pose = poses[k] @ relative_prediction
+            source = _transform_points(downsampled_scans[k + 1], predicted_pose)
+            first_submap_scan = max(0, k - submap_size + 1)
+            target = np.vstack(
+                [
+                    _transform_points(downsampled_scans[index], poses[index])
+                    for index in range(first_submap_scan, k + 1)
+                ]
+            )
+            target = voxel_downsample(target, submap_voxel)
+            if len(target) > max_submap_points:
+                sample_ids = np.linspace(
+                    0, len(target) - 1, max_submap_points, dtype=np.int64
+                )
+                target = target[sample_ids]
+            reg_result = register_point_clouds(
+                src=source,
+                dst=target,
+                max_correspondence_distance=max_correspondence_distance,
+                max_iters=max_iters,
+                init=np.eye(4),
+            )
+            correction = reg_result.transformation
+            next_pose = correction @ predicted_pose
+            target_index = first_submap_scan
+
+        transform = reg_result.transformation
         fitness = reg_result.fitness
         rmse = reg_result.inlier_rmse
-
-        if not (np.all(np.isfinite(T_k)) and np.isfinite(fitness) and np.isfinite(rmse)):
+        if not (
+            np.all(np.isfinite(transform))
+            and np.all(np.isfinite(next_pose))
+            and np.isfinite(fitness)
+            and np.isfinite(rmse)
+        ):
             raise RuntimeError(
                 f"Registration failed for pair {k+1} -> {k} due to non-finite outputs:\n"
-                f"fitness={fitness}, rmse={rmse}, transformation=\n{T_k}"
+                f"fitness={fitness}, rmse={rmse}, transformation=\n{transform}"
             )
         if fitness < min_fitness:
             raise RuntimeError(
                 f"Registration failed for pair {k+1} -> {k}: fitness {fitness} "
                 f"is below min_fitness {min_fitness}.\n"
-                f"rmse={rmse}, transformation=\n{T_k}"
+                f"rmse={rmse}, transformation=\n{transform}"
             )
+        poses[k + 1] = next_pose
+        diagnostics.append(
+            LidarRegistrationDiagnostic(
+                source_index=k + 1,
+                target_index=target_index,
+                method=method,
+                fitness=float(fitness),
+                inlier_rmse_m=float(rmse),
+                source_points=len(source),
+                target_points=len(target),
+                correction_translation_m=float(np.linalg.norm(correction[:3, 3])),
+                correction_rotation_deg=_rotation_angle_deg(correction),
+            )
+        )
 
-        current_pose = current_pose @ T_k
-        poses[k + 1] = current_pose
-
-    return poses
+    return LidarOdometryResult(
+        poses_scan_to_world=poses,
+        diagnostics=tuple(diagnostics),
+        method=method,
+        voxel_m=float(voxel),
+        submap_size=submap_size if method == "scan_to_submap" else 1,
+    )
 
 
 def _demo() -> None:

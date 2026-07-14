@@ -12,7 +12,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from spatialwm.geometry.lidar_odometry import lidar_odometry, voxel_downsample
+from spatialwm.geometry.lidar_odometry import (
+    lidar_odometry,
+    lidar_odometry_detailed,
+    voxel_downsample,
+)
 
 
 def _grid_cloud(n_side: int = 20) -> np.ndarray:
@@ -62,6 +66,25 @@ class TestVoxelDownsample:
 
 
 class TestLidarOdometry:
+    def test_scan_to_submap_returns_diagnostics_and_metric_poses(self):
+        displacement = np.array([0.04, -0.01, 0.0])
+        base = _grid_cloud(n_side=30)
+        scans = [base + index * displacement for index in range(6)]
+        result = lidar_odometry_detailed(
+            scans,
+            method="scan_to_submap",
+            voxel=0.08,
+            submap_size=3,
+            submap_voxel=0.1,
+        )
+        assert result.poses_scan_to_world.shape == (6, 4, 4)
+        assert len(result.diagnostics) == 5
+        assert all(item.method == "scan_to_submap" for item in result.diagnostics)
+        assert all(item.fitness > 0.1 for item in result.diagnostics)
+        np.testing.assert_allclose(
+            result.poses_scan_to_world[-1, :3, 3], -5 * displacement, atol=0.03
+        )
+
     def test_recovers_constant_translation(self):
         d = np.array([0.05, 0.0, 0.0])
         base = _grid_cloud()

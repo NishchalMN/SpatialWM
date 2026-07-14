@@ -45,6 +45,9 @@ class SfmResult:
     reprojection_rmse_before_px: float
     reprojection_rmse_after_px: float
     track_lengths: np.ndarray
+    initial_landmark_count: int
+    triangulation_sources: np.ndarray
+    landmark_confidence: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -213,6 +216,7 @@ def _associate_reference_tracks(
     inlier_mask: np.ndarray,
     *,
     tolerance_px: float,
+    reference_point_ids: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Associate pairwise reference matches with initialized landmark tracks."""
     query = matches.points1[inlier_mask]
@@ -220,10 +224,15 @@ def _associate_reference_tracks(
     if len(query) == 0:
         return np.empty(0, dtype=np.int64), np.empty((0, 2), dtype=np.float64)
 
-    distances, point_ids = cKDTree(reference_tracks).query(query, k=1)
+    distances, track_ids = cKDTree(reference_tracks).query(query, k=1)
+    if reference_point_ids is None:
+        reference_point_ids = np.arange(len(reference_tracks), dtype=np.int64)
+    reference_point_ids = np.asarray(reference_point_ids, dtype=np.int64)
+    if len(reference_point_ids) != len(reference_tracks):
+        raise ValueError("reference_point_ids must match reference_tracks")
     candidates = [
-        (float(distance), int(point_id), current_pixel)
-        for distance, point_id, current_pixel in zip(distances, point_ids, current)
+        (float(distance), int(reference_point_ids[track_id]), current_pixel)
+        for distance, track_id, current_pixel in zip(distances, track_ids, current)
         if distance <= tolerance_px
     ]
     candidates.sort(key=lambda item: item[0])
@@ -246,6 +255,7 @@ def _register_view(
     image: np.ndarray,
     points: np.ndarray,
     reference_tracks: np.ndarray,
+    reference_point_ids: np.ndarray,
     K: np.ndarray,
     *,
     detector: str,
@@ -283,6 +293,7 @@ def _register_view(
         matches,
         geometry.inliers,
         tolerance_px=track_tolerance_px,
+        reference_point_ids=reference_point_ids,
     )
     if len(point_ids) < min_pnp_points:
         return None
@@ -324,6 +335,107 @@ def _register_view(
     return pose, point_ids[positive], pixels[positive]
 
 
+def _triangulate_new_landmarks(
+    anchor: np.ndarray,
+    image: np.ndarray,
+    anchor_pose: np.ndarray,
+    image_pose: np.ndarray,
+    anchor_observations: dict[int, np.ndarray],
+    image_observations: dict[int, np.ndarray],
+    K: np.ndarray,
+    *,
+    detector: str,
+    ratio: float,
+    max_features: int,
+    ransac_threshold_px: float,
+    track_tolerance_px: float,
+    min_triangulation_angle_deg: float,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Triangulate verified matches not already assigned to landmarks."""
+    matches = match_features(
+        anchor,
+        image,
+        detector=detector,
+        ratio=ratio,
+        mutual=True,
+        max_features=max_features,
+        seed=seed,
+    )
+    if len(matches.points1) < 8:
+        return (
+            np.empty((0, 3), dtype=np.float64),
+            np.empty((0, 2), dtype=np.float64),
+            np.empty((0, 2), dtype=np.float64),
+        )
+    try:
+        geometry = fundamental_ransac(
+            matches.points1,
+            matches.points2,
+            thresh=ransac_threshold_px,
+            p_success=0.999,
+            max_iters=10_000,
+        )
+    except (RuntimeError, ValueError):
+        return (
+            np.empty((0, 3), dtype=np.float64),
+            np.empty((0, 2), dtype=np.float64),
+            np.empty((0, 2), dtype=np.float64),
+        )
+
+    pixels_anchor = matches.points1[geometry.inliers]
+    pixels_image = matches.points2[geometry.inliers]
+    if anchor_observations:
+        existing_anchor = np.vstack(list(anchor_observations.values()))
+        distance_anchor, _ = cKDTree(existing_anchor).query(pixels_anchor, k=1)
+    else:
+        distance_anchor = np.full(len(pixels_anchor), np.inf)
+    if image_observations:
+        existing_image = np.vstack(list(image_observations.values()))
+        distance_image, _ = cKDTree(existing_image).query(pixels_image, k=1)
+    else:
+        distance_image = np.full(len(pixels_image), np.inf)
+    novel = (distance_anchor > track_tolerance_px) & (distance_image > track_tolerance_px)
+    pixels_anchor = pixels_anchor[novel]
+    pixels_image = pixels_image[novel]
+    if not len(pixels_anchor):
+        return (
+            np.empty((0, 3), dtype=np.float64),
+            np.empty((0, 2), dtype=np.float64),
+            np.empty((0, 2), dtype=np.float64),
+        )
+
+    anchor_rotation = Rotation.from_rotvec(anchor_pose[:3]).as_matrix()
+    image_rotation = Rotation.from_rotvec(image_pose[:3]).as_matrix()
+    projection_anchor = K @ np.hstack((anchor_rotation, anchor_pose[3:, None]))
+    projection_image = K @ np.hstack((image_rotation, image_pose[3:, None]))
+    points = triangulate_dlt(
+        projection_anchor, projection_image, pixels_anchor, pixels_image
+    )
+    depth_anchor = (points @ anchor_rotation.T + anchor_pose[3:])[:, 2]
+    depth_image = (points @ image_rotation.T + image_pose[3:])[:, 2]
+    error_anchor = np.linalg.norm(_project(points, anchor_pose, K) - pixels_anchor, axis=1)
+    error_image = np.linalg.norm(_project(points, image_pose, K) - pixels_image, axis=1)
+
+    center_anchor = -anchor_rotation.T @ anchor_pose[3:]
+    center_image = -image_rotation.T @ image_pose[3:]
+    ray_anchor = points - center_anchor
+    ray_image = points - center_image
+    ray_cosine = np.sum(ray_anchor * ray_image, axis=1) / (
+        np.linalg.norm(ray_anchor, axis=1) * np.linalg.norm(ray_image, axis=1)
+    )
+    angles = np.degrees(np.arccos(np.clip(ray_cosine, -1.0, 1.0)))
+    valid = (
+        np.all(np.isfinite(points), axis=1)
+        & (depth_anchor > 0.0)
+        & (depth_image > 0.0)
+        & (angles >= min_triangulation_angle_deg)
+        & (error_anchor < 3.0 * ransac_threshold_px)
+        & (error_image < 3.0 * ransac_threshold_px)
+    )
+    return points[valid], pixels_anchor[valid], pixels_image[valid]
+
+
 def _poses_to_matrices(poses: np.ndarray) -> np.ndarray:
     matrices = np.repeat(np.eye(4, dtype=np.float64)[None], len(poses), axis=0)
     matrices[:, :3, :3] = Rotation.from_rotvec(poses[:, :3]).as_matrix()
@@ -345,16 +457,17 @@ def run_sfm_detailed(
     track_tolerance_px: float = 1.5,
     min_initial_points: int = 30,
     min_pnp_points: int = 12,
+    expand_landmarks: bool = True,
+    min_triangulation_angle_deg: float = 0.5,
     seed: int = 0,
     refine: bool = True,
 ) -> SfmResult:
-    """Reconstruct a bounded sequence with a reference-anchored sparse map.
+    """Reconstruct a bounded sequence with incremental landmark expansion.
 
     The best reference-to-candidate initialization is chosen by the number of
-    cheirality-valid points and their median image displacement. Remaining
-    cameras are registered from 2D-3D correspondences using PnP RANSAC. This
-    minimal version keeps the initial landmark set fixed; map expansion is the
-    next extension once registration is demonstrably reliable.
+    cheirality-valid points and their median image displacement. Each remaining
+    camera is registered from a nearby registered view using PnP RANSAC. New,
+    verified feature tracks are then triangulated between the two known poses.
     """
     intrinsics = _validate_intrinsics(K)
     images, paths, absolute_indices = _load_images(
@@ -366,6 +479,8 @@ def run_sfm_detailed(
         raise ValueError("ransac_threshold_px must be finite and positive")
     if not np.isfinite(track_tolerance_px) or track_tolerance_px <= 0.0:
         raise ValueError("track_tolerance_px must be finite and positive")
+    if not np.isfinite(min_triangulation_angle_deg) or min_triangulation_angle_deg <= 0.0:
+        raise ValueError("min_triangulation_angle_deg must be finite and positive")
 
     initializations = [
         recovered
@@ -391,6 +506,7 @@ def run_sfm_detailed(
     initialization = max(initializations, key=lambda item: item.score)
 
     points = initialization.points.copy()
+    initial_landmark_count = len(points)
     camera_records: list[tuple[int, np.ndarray]] = [
         (0, np.zeros(6, dtype=np.float64)),
         (
@@ -403,47 +519,107 @@ def run_sfm_detailed(
             ),
         ),
     ]
-    observation_records: list[tuple[int, int, float, float]] = []
+    image_observations: dict[int, dict[int, np.ndarray]] = {
+        0: {},
+        initialization.second_index: {},
+    }
+    triangulation_sources: list[tuple[int, int]] = []
     for point_id, (pixel1, pixel2) in enumerate(
         zip(initialization.reference_pixels, initialization.second_pixels)
     ):
-        observation_records.append((0, point_id, pixel1[0], pixel1[1]))
-        observation_records.append((1, point_id, pixel2[0], pixel2[1]))
+        image_observations[0][point_id] = pixel1
+        image_observations[initialization.second_index][point_id] = pixel2
+        triangulation_sources.append((0, initialization.second_index))
 
     for image_index, image in enumerate(images[1:], start=1):
         if image_index == initialization.second_index:
             continue
-        registration = _register_view(
-            images[0],
-            image,
-            points,
-            initialization.reference_pixels,
-            intrinsics,
-            detector=detector,
-            ratio=ratio,
-            max_features=max_features,
-            ransac_threshold_px=ransac_threshold_px,
-            track_tolerance_px=track_tolerance_px,
-            min_pnp_points=min_pnp_points,
-            seed=seed,
+        registered_by_index = dict(camera_records)
+        candidates = sorted(
+            registered_by_index,
+            key=lambda registered_index: abs(registered_index - image_index),
         )
-        if registration is None:
+        accepted = None
+        anchor_index = -1
+        for candidate_index in candidates:
+            candidate_observations = image_observations[candidate_index]
+            if len(candidate_observations) < min_pnp_points:
+                continue
+            candidate_point_ids = np.fromiter(
+                candidate_observations.keys(), dtype=np.int64
+            )
+            candidate_pixels = np.vstack(list(candidate_observations.values()))
+            registration = _register_view(
+                images[candidate_index],
+                image,
+                points,
+                candidate_pixels,
+                candidate_point_ids,
+                intrinsics,
+                detector=detector,
+                ratio=ratio,
+                max_features=max_features,
+                ransac_threshold_px=ransac_threshold_px,
+                track_tolerance_px=track_tolerance_px,
+                min_pnp_points=min_pnp_points,
+                seed=seed,
+            )
+            if registration is not None:
+                accepted = registration
+                anchor_index = candidate_index
+                break
+        if accepted is None:
             continue
-        pose, point_ids, pixels = registration
-        camera_id = len(camera_records)
+        pose, point_ids, pixels = accepted
         camera_records.append((image_index, pose))
-        for point_id, pixel in zip(point_ids, pixels):
-            observation_records.append((camera_id, int(point_id), pixel[0], pixel[1]))
+        image_observations[image_index] = {
+            int(point_id): pixel for point_id, pixel in zip(point_ids, pixels)
+        }
+
+        if expand_landmarks:
+            new_points, anchor_pixels, image_pixels = _triangulate_new_landmarks(
+                images[anchor_index],
+                image,
+                registered_by_index[anchor_index],
+                pose,
+                image_observations[anchor_index],
+                image_observations[image_index],
+                intrinsics,
+                detector=detector,
+                ratio=ratio,
+                max_features=max_features,
+                ransac_threshold_px=ransac_threshold_px,
+                track_tolerance_px=track_tolerance_px,
+                min_triangulation_angle_deg=min_triangulation_angle_deg,
+                seed=seed,
+            )
+            first_new_id = len(points)
+            if len(new_points):
+                points = np.vstack((points, new_points))
+            for offset, (anchor_pixel, image_pixel) in enumerate(
+                zip(anchor_pixels, image_pixels)
+            ):
+                point_id = first_new_id + offset
+                image_observations[anchor_index][point_id] = anchor_pixel
+                image_observations[image_index][point_id] = image_pixel
+                triangulation_sources.append((anchor_index, image_index))
+
+    camera_id_by_image = {
+        image_index: camera_id
+        for camera_id, image_index in enumerate(sorted(dict(camera_records)))
+    }
+    observation_records: list[tuple[int, int, float, float]] = []
+    for image_index, point_pixels in image_observations.items():
+        camera_id = camera_id_by_image[image_index]
+        for point_id, pixel in point_pixels.items():
+            observation_records.append((camera_id, point_id, pixel[0], pixel[1]))
 
     order = np.argsort([record[0] for record in camera_records])
-    old_to_new = np.empty(len(order), dtype=np.int64)
-    old_to_new[order] = np.arange(len(order))
     registered_relative = np.array(
         [camera_records[int(old_id)][0] for old_id in order], dtype=np.int64
     )
     poses_initial = np.vstack([camera_records[int(old_id)][1] for old_id in order])
     observations = np.asarray(observation_records, dtype=np.float64)
-    observations[:, 0] = old_to_new[observations[:, 0].astype(np.int64)]
     observation_order = np.lexsort((observations[:, 1], observations[:, 0]))
     observations = observations[observation_order]
 
@@ -461,6 +637,20 @@ def run_sfm_detailed(
     track_lengths = np.bincount(
         observations[:, 1].astype(np.int64), minlength=len(points_final)
     )
+    point_errors = np.zeros(len(points_final), dtype=np.float64)
+    for point_id in range(len(points_final)):
+        rows = observations[observations[:, 1] == point_id]
+        errors = []
+        for row in rows:
+            camera_id = int(row[0])
+            predicted = _project(
+                points_final[point_id : point_id + 1],
+                poses_final[camera_id],
+                intrinsics,
+            )[0]
+            errors.append(np.linalg.norm(predicted - row[2:4]))
+        point_errors[point_id] = float(np.mean(errors))
+    landmark_confidence = track_lengths / (1.0 + point_errors)
     registered_paths = tuple(str(paths[index]) for index in registered_relative)
     return SfmResult(
         points=points_final,
@@ -472,6 +662,9 @@ def run_sfm_detailed(
         reprojection_rmse_before_px=rmse_before,
         reprojection_rmse_after_px=rmse_after,
         track_lengths=track_lengths,
+        initial_landmark_count=initial_landmark_count,
+        triangulation_sources=np.asarray(triangulation_sources, dtype=np.int64),
+        landmark_confidence=landmark_confidence,
     )
 
 

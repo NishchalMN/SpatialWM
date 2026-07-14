@@ -71,6 +71,41 @@ def test_run_sfm_registers_sequence_and_refines(reconstruction: SfmResult) -> No
     assert reconstruction.reprojection_rmse_after_px < 0.5
     assert np.all(reconstruction.track_lengths >= 2)
     assert np.any(reconstruction.track_lengths == 4)
+    assert len(reconstruction.points) > reconstruction.initial_landmark_count
+    assert reconstruction.triangulation_sources.shape == (len(reconstruction.points), 2)
+    assert np.all(np.isfinite(reconstruction.landmark_confidence))
+    assert np.all(reconstruction.landmark_confidence > 0.0)
+
+
+def test_landmark_expansion_adds_verified_two_view_tracks(
+    synthetic_sequence: tuple[Path, np.ndarray],
+) -> None:
+    directory, K = synthetic_sequence
+    fixed = run_sfm_detailed(
+        directory,
+        K,
+        max_images=4,
+        max_features=5000,
+        ratio=0.8,
+        min_initial_points=20,
+        min_pnp_points=8,
+        refine=False,
+        expand_landmarks=False,
+    )
+    expanded = run_sfm_detailed(
+        directory,
+        K,
+        max_images=4,
+        max_features=5000,
+        ratio=0.8,
+        min_initial_points=20,
+        min_pnp_points=8,
+        refine=False,
+        expand_landmarks=True,
+    )
+    assert len(expanded.points) > len(fixed.points)
+    assert expanded.initial_landmark_count == len(fixed.points)
+    assert np.all(expanded.track_lengths >= 2)
 
 
 def test_run_sfm_poses_are_world_to_camera_se3(reconstruction: SfmResult) -> None:

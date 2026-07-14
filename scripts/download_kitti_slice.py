@@ -114,10 +114,15 @@ def main() -> None:
     ]
 
     drive_prefix = "2011_09_26/2011_09_26_drive_0005_sync"
-    drive_files = [f"{drive_prefix}/oxts/timestamps.txt"]
+    drive_files = [
+        f"{drive_prefix}/oxts/timestamps.txt",
+        f"{drive_prefix}/velodyne_points/timestamps.txt",
+        f"{drive_prefix}/image_02/timestamps.txt",
+    ]
     for i in range(frames_count):
         drive_files.append(f"{drive_prefix}/oxts/data/{i:010d}.txt")
         drive_files.append(f"{drive_prefix}/velodyne_points/data/{i:010d}.bin")
+        drive_files.append(f"{drive_prefix}/image_02/data/{i:010d}.png")
 
     if not args.download:
         print("[Dry Run] Dry-run mode active. No network request will be made.")
@@ -142,6 +147,10 @@ def main() -> None:
         )
         os.makedirs(
             out_dir / "2011_09_26" / "2011_09_26_drive_0005_sync" / "velodyne_points" / "data",
+            exist_ok=True,
+        )
+        os.makedirs(
+            out_dir / "2011_09_26" / "2011_09_26_drive_0005_sync" / "image_02" / "data",
             exist_ok=True,
         )
 
@@ -223,9 +232,16 @@ def main() -> None:
             f"does not match requested frames {frames_count}"
         )
 
+    image_dir = out_dir / drive_prefix / "image_02" / "data"
+    extracted_images = list(image_dir.glob("*.png"))
+    if len(extracted_images) != frames_count:
+        raise ValueError(
+            f"Extracted camera image count {len(extracted_images)} "
+            f"does not match requested frames {frames_count}"
+        )
+
     print(f"Successfully downloaded and verified KITTI slice ({frames_count} frames) in {out_dir}")
 
 
 if __name__ == "__main__":
     main()
-

@@ -1,0 +1,7 @@
+{
+  "frame_id": 0,
+  "lidar_points": 123397,
+  "visible_projected_points": 20468,
+  "visible_fraction": 0.16587113138893167,
+  "median_visible_depth_m": 14.772523050691454
+}
