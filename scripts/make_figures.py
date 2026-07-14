@@ -15,11 +15,13 @@ import numpy as np
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 
+from spatialwm.eval.trajectory import umeyama
 from spatialwm.geometry.bundle_adjust import bundle_adjust, reprojection_residuals
 from spatialwm.geometry.camera import transform_points, unproject
 from spatialwm.geometry.features import match_features
 from spatialwm.geometry.icp import register_point_clouds
 from spatialwm.geometry.ransac import fundamental_ransac
+from spatialwm.geometry.sfm_toy import run_sfm_detailed
 from spatialwm.geometry.tartanair import (
     compute_se3_error,
     derive_relative_transform,
@@ -837,6 +839,279 @@ def generate_tartanair_matches(
     return figure_path
 
 
+def generate_tartanair_sfm(
+    tartanair_root: str,
+    frame_idx: int,
+    frame_stride: int,
+    n_frames: int,
+    output_dir: str,
+) -> str:
+    """Generate and persist a bounded real-image sparse-SfM reconstruction."""
+    image_dir = os.path.join(tartanair_root, "image_left")
+    pose_path = os.path.join(tartanair_root, "pose_left.txt")
+    if not os.path.isdir(image_dir) or not os.path.isfile(pose_path):
+        raise FileNotFoundError("TartanAir image_left and pose_left.txt are required")
+    if n_frames < 3 or frame_stride < 1:
+        raise ValueError("n_frames must be >= 3 and frame_stride must be positive")
+
+    K = np.array(
+        [[320.0, 0.0, 320.0], [0.0, 320.0, 240.0], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    result = run_sfm_detailed(
+        image_dir,
+        K,
+        start=frame_idx,
+        stride=frame_stride,
+        max_images=n_frames,
+        detector="sift",
+        ratio=0.75,
+        max_features=4000,
+        ransac_threshold_px=1.0,
+        min_initial_points=30,
+        min_pnp_points=12,
+        seed=0,
+        refine=True,
+    )
+    if len(result.poses_world_to_camera) < 3:
+        raise RuntimeError(
+            "at least three registered cameras are required for trajectory alignment"
+        )
+
+    estimated_centres = np.array(
+        [
+            -pose[:3, :3].T @ pose[:3, 3]
+            for pose in result.poses_world_to_camera
+        ]
+    )
+    pose_rows = np.loadtxt(pose_path)
+    ground_truth_centres = np.array(
+        [
+            parse_pose_to_transform(pose_rows[index])[:3, 3]
+            for index in result.registered_image_indices
+        ]
+    )
+    alignment_rotation, alignment_translation, alignment_scale = umeyama(
+        estimated_centres,
+        ground_truth_centres,
+        with_scale=True,
+    )
+
+    def align(points: np.ndarray) -> np.ndarray:
+        return alignment_scale * (points @ alignment_rotation.T) + alignment_translation
+
+    aligned_centres = align(estimated_centres)
+    aligned_points = align(result.points)
+    trajectory_errors = np.linalg.norm(aligned_centres - ground_truth_centres, axis=1)
+    ate_rmse = float(np.sqrt(np.mean(trajectory_errors**2)))
+
+    source_bgr = cv2.imread(result.image_paths[0], cv2.IMREAD_COLOR)
+    if source_bgr is None:
+        raise ValueError("failed to decode the first registered SfM image")
+    source_rgb = cv2.cvtColor(source_bgr, cv2.COLOR_BGR2RGB)
+    point_colours = np.full((len(result.points), 3), 0.45, dtype=np.float64)
+    first_rows = result.observations[result.observations[:, 0] == 0]
+    first_ids = first_rows[:, 1].astype(np.int64)
+    first_pixels = np.rint(first_rows[:, 2:4]).astype(np.int64)
+    first_pixels[:, 0] = np.clip(first_pixels[:, 0], 0, source_rgb.shape[1] - 1)
+    first_pixels[:, 1] = np.clip(first_pixels[:, 1], 0, source_rgb.shape[0] - 1)
+    point_colours[first_ids] = (
+        source_rgb[first_pixels[:, 1], first_pixels[:, 0]].astype(np.float64) / 255.0
+    )
+
+    fig = plt.figure(figsize=(18, 12))
+    grid = fig.add_gridspec(2, 2, height_ratios=[1.05, 1.0])
+    observation_axis = fig.add_subplot(grid[0, 0])
+    cloud_axis = fig.add_subplot(grid[0, 1], projection="3d")
+    trajectory_axis = fig.add_subplot(grid[1, 0])
+    diagnostic_axis = fig.add_subplot(grid[1, 1])
+
+    observation_axis.imshow(source_rgb)
+    display_rows = first_rows[
+        np.linspace(0, len(first_rows) - 1, min(180, len(first_rows)), dtype=int)
+    ]
+    observation_axis.scatter(
+        display_rows[:, 2],
+        display_rows[:, 3],
+        s=18,
+        facecolors="none",
+        edgecolors="#00e5ff",
+        linewidths=0.7,
+    )
+    observation_axis.set_title(
+        f"Reference observations (frame {result.registered_image_indices[0]})\n"
+        f"{len(first_rows)} initialized landmarks",
+        fontweight="bold",
+    )
+    observation_axis.axis("off")
+
+    cloud_axis.scatter(
+        aligned_points[:, 0],
+        aligned_points[:, 1],
+        aligned_points[:, 2],
+        c=point_colours,
+        s=10,
+        alpha=0.75,
+        depthshade=False,
+    )
+    cloud_axis.plot(
+        aligned_centres[:, 0],
+        aligned_centres[:, 1],
+        aligned_centres[:, 2],
+        "o-",
+        color="#ef476f",
+        linewidth=2.0,
+        markersize=5,
+        label="Estimated cameras",
+    )
+    cloud_axis.set_xlabel("World X [m]")
+    cloud_axis.set_ylabel("World Y [m]")
+    cloud_axis.set_zlabel("World Z [m]")
+    cloud_axis.set_title(
+        f"Similarity-aligned sparse cloud\n{len(result.points)} points / "
+        f"{len(result.poses_world_to_camera)} cameras",
+        fontweight="bold",
+    )
+    cloud_axis.view_init(elev=22, azim=-58)
+    cloud_axis.legend(loc="upper left")
+
+    trajectory_axis.plot(
+        ground_truth_centres[:, 0],
+        ground_truth_centres[:, 2],
+        "o-",
+        color="black",
+        linewidth=3,
+        markersize=7,
+        label="TartanAir GT",
+    )
+    trajectory_axis.plot(
+        aligned_centres[:, 0],
+        aligned_centres[:, 2],
+        "x--",
+        color="#ef476f",
+        linewidth=2,
+        markersize=8,
+        label="Monocular SfM + Sim(3)",
+    )
+    for order, frame in enumerate(result.registered_image_indices):
+        trajectory_axis.annotate(
+            str(frame),
+            (aligned_centres[order, 0], aligned_centres[order, 2]),
+            xytext=(5, 5),
+            textcoords="offset points",
+            fontsize=8,
+        )
+    trajectory_axis.set_aspect("equal", adjustable="datalim")
+    trajectory_axis.set_xlabel("World X [m]")
+    trajectory_axis.set_ylabel("World Z [m]")
+    trajectory_axis.set_title(
+        f"Camera path after monocular scale alignment\nATE RMSE={ate_rmse:.4f} m "
+        f"over {len(aligned_centres)} nearby frames",
+        fontweight="bold",
+    )
+    trajectory_axis.grid(True, linestyle=":", alpha=0.4)
+    trajectory_axis.legend()
+
+    diagnostic_axis.bar(
+        ["Before BA", "After BA"],
+        [result.reprojection_rmse_before_px, result.reprojection_rmse_after_px],
+        color=["#d62728", "#2ca02c"],
+        width=0.55,
+        label="Reprojection RMSE",
+    )
+    diagnostic_axis.axhline(2.0, color="#555555", linestyle="--", label="2 px target")
+    diagnostic_axis.set_ylabel("Reprojection RMSE [pixels]")
+    diagnostic_axis.set_title(
+        "Global refinement and track support\n"
+        f"{len(result.observations)} observations; "
+        f"median track length={np.median(result.track_lengths):.0f}",
+        fontweight="bold",
+    )
+    diagnostic_axis.grid(True, axis="y", linestyle=":", alpha=0.4)
+    diagnostic_axis.legend(loc="upper right")
+    diagnostic_axis.set_xlim(-0.7, 1.7)
+    track_axis = diagnostic_axis.inset_axes([0.55, 0.15, 0.40, 0.48])
+    track_values, track_counts = np.unique(result.track_lengths, return_counts=True)
+    track_axis.bar(
+        track_values,
+        track_counts,
+        color="#4361ee",
+        alpha=0.8,
+        width=0.65,
+    )
+    track_axis.set_title("Landmark support", fontsize=9, fontweight="bold")
+    track_axis.set_xlabel("Track length [views]", fontsize=8)
+    track_axis.set_ylabel("Landmarks", fontsize=8)
+    track_axis.set_xticks(track_values)
+    track_axis.tick_params(labelsize=8)
+    track_axis.grid(True, axis="y", linestyle=":", alpha=0.3)
+
+    fig.suptitle(
+        "Minimal Sparse SfM on TartanAir: Images to Optimized 3D Structure\n"
+        f"P000 frames {result.registered_image_indices[0]}-"
+        f"{result.registered_image_indices[-1]} | initial pair relative indices "
+        f"{result.initial_pair} | reprojection RMSE "
+        f"{result.reprojection_rmse_before_px:.3f} -> "
+        f"{result.reprojection_rmse_after_px:.3f} px",
+        fontsize=14,
+        fontweight="bold",
+    )
+    fig.text(
+        0.5,
+        0.015,
+        "World-to-camera poses; arbitrary monocular scale aligned to GT only for trajectory "
+        "evaluation. Six-frame controlled diagnostic, not a benchmark.",
+        ha="center",
+        fontsize=10,
+    )
+    fig.tight_layout(rect=[0, 0.04, 1, 0.91])
+
+    os.makedirs(output_dir, exist_ok=True)
+    figure_path = os.path.join(output_dir, "tartanair_sparse_sfm.png")
+    fig.savefig(figure_path, dpi=140)
+    plt.close(fig)
+
+    np.savez_compressed(
+        os.path.join(output_dir, "tartanair_sparse_sfm_reconstruction.npz"),
+        points=result.points,
+        poses_world_to_camera=result.poses_world_to_camera,
+        observations=result.observations,
+        registered_image_indices=result.registered_image_indices,
+        track_lengths=result.track_lengths,
+        intrinsics=K,
+    )
+    metrics_path = os.path.join(output_dir, "tartanair_sparse_sfm_metrics.json")
+    with open(metrics_path, "w", encoding="utf-8") as metrics_file:
+        json.dump(
+            {
+                "sequence": "abandonedfactory/Easy/P000",
+                "requested_start_frame": frame_idx,
+                "requested_frame_stride": frame_stride,
+                "requested_frame_count": n_frames,
+                "registered_image_indices": result.registered_image_indices.tolist(),
+                "initial_pair_relative_indices": list(result.initial_pair),
+                "pose_convention": "world-to-camera",
+                "scale_convention": "initial translation unit; monocular scale arbitrary",
+                "n_registered_cameras": len(result.poses_world_to_camera),
+                "n_points": len(result.points),
+                "n_observations": len(result.observations),
+                "median_track_length": float(np.median(result.track_lengths)),
+                "reprojection_rmse_before_px": result.reprojection_rmse_before_px,
+                "reprojection_rmse_after_px": result.reprojection_rmse_after_px,
+                "sim3_alignment_scale_to_gt": alignment_scale,
+                "sim3_aligned_ate_rmse_m": ate_rmse,
+                "interpretation": (
+                    "bounded six-frame integration diagnostic; the very short aligned "
+                    "trajectory is not a benchmark result"
+                ),
+            },
+            metrics_file,
+            indent=2,
+        )
+        metrics_file.write("\n")
+    return figure_path
+
+
 def generate_tartanair_rgbd(tartanair_root: str, frame_idx: int, output_dir: str) -> str:
     """Generate the TartanAir RGB-D and top-down trajectory preview.
 
@@ -1455,6 +1730,7 @@ def main() -> None:
         "geometry-icp",
         "tartanair-rgbd",
         "tartanair-matches",
+        "tartanair-sfm",
         "tartanair-icp",
     ]
     parser.add_argument(
@@ -1481,6 +1757,18 @@ def main() -> None:
         type=int,
         default=5,
         help="Frame stride/step to the second frame for tartanair-icp figure",
+    )
+    parser.add_argument(
+        "--tartanair-sfm-stride",
+        type=int,
+        default=1,
+        help="Frame step within the bounded TartanAir SfM sequence",
+    )
+    parser.add_argument(
+        "--tartanair-sfm-frames",
+        type=int,
+        default=6,
+        help="Number of requested frames in the bounded TartanAir SfM sequence",
     )
     args = parser.parse_args()
 
@@ -1521,6 +1809,15 @@ def main() -> None:
                 args.tartanair_root,
                 args.tartanair_frame,
                 args.tartanair_stride,
+                args.output_dir,
+            )
+            print(f"Generated figure '{fig}' saved to: {out_path}")
+        elif fig == "tartanair-sfm":
+            out_path = generate_tartanair_sfm(
+                args.tartanair_root,
+                args.tartanair_frame,
+                args.tartanair_sfm_stride,
+                args.tartanair_sfm_frames,
                 args.output_dir,
             )
             print(f"Generated figure '{fig}' saved to: {out_path}")

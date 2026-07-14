@@ -51,9 +51,9 @@ There are three connected threads:
 | 2. Robust two-view geometry | What camera motion explains the matches? | `geometry/ransac.py`, `geometry/two_view.py` | Working |
 | 3. Triangulation | Where is the matched point in 3D? | `geometry/two_view.py` | Working synthetically |
 | 4. Bundle adjustment | Which cameras and points best explain all images jointly? | `geometry/bundle_adjust.py` | Working synthetically; human review remains |
-| 5. Sparse SfM | Can the stages reconstruct one scene end to end? | `geometry/sfm_toy.py` | Incomplete |
+| 5. Sparse SfM | Can the stages reconstruct one scene end to end? | `geometry/sfm_toy.py` | Working on a controlled six-frame TartanAir scene; human review remains |
 | 6. RGB-D registration | Can direct depth recover relative motion? | `geometry/icp.py`, `geometry/tartanair.py` | Synthetic success and real failure are visually/quantitatively documented |
-| 7. LiDAR odometry and BEV | Can repeated 3D scans form a trajectory and map view? | `geometry/lidar_odometry.py`, `eval/trajectory.py`, `perception/voxelize.py` | Working bounded diagnostic |
+| 7. LiDAR odometry and BEV | Can repeated 3D scans form a trajectory and map view? | `geometry/lidar_odometry.py`, `eval/trajectory.py`, `perception/voxelize.py` | Bounded numerical and visual gate complete; human review remains |
 | 8. World-model bridge | Does measured geometry improve future prediction? | `worldmodel/*` | Planned after classical closeout |
 
 ---
@@ -314,20 +314,23 @@ Incremental SfM builds a reconstruction in a stable order:
 3. recover relative pose and triangulate initial points;
 4. find 2D observations in a new image whose 3D points are already known;
 5. estimate the new camera pose with PnP + RANSAC;
-6. triangulate new points;
+6. triangulate new points as the map grows;
 7. periodically run bundle adjustment.
 
 This stage turns isolated algorithms into a system. It also exposes data association, track management, coordinate conventions, and initialization failures that unit tests cannot reveal.
 
-### Repository target
+### Repository implementation
 
-`run_sfm(image_dir, K)` in `geometry/sfm_toy.py`, returning:
+`run_sfm(image_dir, K)` in `geometry/sfm_toy.py` returns:
 
 - `points: (N, 3)`;
-- `poses: (M, 4, 4)`;
-- preferably a saved observation/track table and metrics for reproducibility.
+- world-to-camera `poses: (M, 4, 4)`.
 
-Use one controlled, calibrated scene. COLMAP can later act as a reference baseline; integrating it is not a substitute for making the project pipeline run.
+`run_sfm_detailed(...)` additionally returns observations, registered image indices, track lengths, initial-pair metadata, and before/after reprojection RMSE. The implementation selects a verified initial pair, triangulates its positive-depth landmarks, registers additional views with PnP RANSAC, and globally refines cameras and points with bundle adjustment.
+
+The controlled P000 frames 1750–1755 diagnostic registers all six cameras and reconstructs 467 landmarks from 2,277 observations. BA reduces reprojection RMSE from 0.773 px to 0.178 px. Points, poses, observations, metrics, and the inspected figure are saved reproducibly. The deliberately minimal map does not yet triangulate new landmarks after initialization; later views extend the initial landmark tracks.
+
+COLMAP can later act as a reference baseline; integrating it is not a substitute for understanding this transparent pipeline.
 
 ### Proof that this stage is done
 
@@ -345,6 +348,8 @@ Use one controlled, calibrated scene. COLMAP can later act as a reference baseli
 - PnP uses too few or poorly distributed 2D–3D points;
 - scale or pose conventions change between stages;
 - BA absorbs wrong correspondences instead of fixing them.
+
+Read: [Minimal sparse Structure from Motion](sparse_sfm.md).
 
 ---
 
@@ -429,7 +434,7 @@ BEV collapses the 3D scan onto a top-down occupancy grid. It provides an intuiti
 - `voxelize(...)`, `bev(...)` in `perception/voxelize.py`
 - `scripts/evaluate_kitti_lidar.py`
 
-The existing bounded 10-frame KITTI diagnostic reports ATE RMSE `0.048072 m` and mean one-step RPE `0.061191 m`. This confirms a local pipeline, not full KITTI benchmark performance.
+The bounded 10-frame KITTI diagnostic reports rigid-aligned ATE RMSE `0.093881 m` with metric scale fixed, raw final position error `0.320387 m`, mean one-step translation error `0.061191 m`, and mean one-step rotation error `0.107873 deg`. A free Sim(3) fit would report `0.048072 m` but rescales the metric trajectory by `0.917`, so it is not used as the primary LiDAR claim. This confirms a local pipeline, not full KITTI benchmark performance.
 
 ### Proof that this stage is done
 
@@ -448,6 +453,8 @@ The existing bounded 10-frame KITTI diagnostic reports ATE RMSE `0.048072 m` and
 - dynamic vehicles corrupting correspondences;
 - sparse returns and limited overlap;
 - reporting a very short sequence as a benchmark.
+
+Read: [KITTI LiDAR odometry, trajectory error, and BEV](lidar_odometry_bev.md).
 
 ---
 

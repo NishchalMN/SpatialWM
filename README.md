@@ -2,7 +2,7 @@
 
 > A geometry-first 3D computer-vision project that recovers motion and structure from images, RGB-D, and LiDAR, then tests whether the quality of that geometry changes future visual prediction.
 
-**Current status:** the camera, classical SIFT/ORB matching, two-view RANSAC, sparse bundle adjustment, ICP, TartanAir registration, KITTI LiDAR odometry, trajectory evaluation, and BEV foundations work. End-to-end sparse SfM is the active missing classical integration. The world-model experiment is deliberately gated until the classical 3D story is complete.
+**Current status:** the classical 3D chain is now integrated and documented across images, RGB-D, and LiDAR: matching, two-view geometry, sparse SfM/BA, ground-truth-checked ICP, scan-to-scan odometry, metric trajectory error, and BEV occupancy. Human conceptual signoff and final portfolio review remain before the gated world-model experiment.
 
 ## The question
 
@@ -58,7 +58,7 @@ B1 versus T-GT runs first on a small fixed clip set. T-EST/T-NOISE/T-GATED are o
 
 ## Current evidence
 
-The current focused geometry stack has 116 passing tests. The complete collection is clean at 116 passed, 70 explicitly skipped, and no failures; deferred placeholder contracts remain visible as skips rather than being misreported as active regressions.
+The complete collection is clean at 122 passed, 68 explicitly skipped, and no failures. The five deterministic SfM tests include a rendered multi-view integration and an explicit featureless-initialization failure. Deferred placeholder contracts remain visible as skips rather than being misreported as active regressions.
 
 ### Robust two-view correspondences
 
@@ -77,6 +77,21 @@ On TartanAir P000 frames 1750 to 1755, the reusable SIFT pipeline produces:
 ![TartanAir classical feature correspondence pipeline](figures/curated/tartanair_feature_matches.png)
 
 See [the feature-matching reference](docs/feature_matching.md).
+
+### Minimal sparse Structure from Motion
+
+The bounded SfM integration now connects the image path end to end: matching → robust F/E → pose/cheirality → triangulation → PnP view registration → bundle adjustment. On TartanAir P000 frames 1750–1755 it registers all six requested cameras and reconstructs:
+
+- 467 initial-pair landmarks;
+- 2,277 pixel observations;
+- median track support of 5 views;
+- reprojection RMSE reduced from 0.773 px to 0.178 px after BA.
+
+The local monocular path is Sim(3)-aligned to ground truth only for diagnostic visualization; its arbitrary scale and six-frame duration mean it is not an odometry benchmark.
+
+![TartanAir minimal sparse SfM](figures/curated/tartanair_sparse_sfm.png)
+
+The associated NPZ saves points, world-to-camera poses, observations, frame indices, track lengths, and intrinsics. See [the sparse-SfM reference](docs/sparse_sfm.md) for the coordinate contract, system design, limitations, reproduction command, and interview Q&A.
 
 ### Sparse bundle adjustment
 
@@ -102,12 +117,21 @@ The TartanAir diagnostic is intentionally shown as a failure case. Local alignme
 
 ### KITTI LiDAR odometry
 
-A bounded 10-frame KITTI raw diagnostic on 2011-09-26 drive 0005 reproduced:
+A bounded 10-frame KITTI raw diagnostic on 2011-09-26 drive 0005 reports:
 
-- ATE RMSE: `0.048072 m`
-- mean one-step RPE: `0.061191 m`
+- rigid-aligned ATE RMSE with no scale adjustment: `0.093881 m`;
+- raw position RMSE / final raw error: `0.177279 m` / `0.320387 m`;
+- mean one-step translation / rotation error: `0.061191 m` / `0.107873 deg`.
 
-These values validate a short local pipeline. They are not full-sequence KITTI benchmark claims.
+The previously quoted `0.048072 m` used a free Sim(3) alignment and rescaled the metric path by `0.917`; it is retained only as a diagnostic, not the primary LiDAR claim.
+
+![KITTI scan-to-scan odometry and drift](figures/curated/kitti_lidar_odometry.png)
+
+The same ten estimated poses accumulate 851,528 cropped/transformed points into 79,725 occupied 0.10 m BEV cells. The visual keeps identical metric axes and makes the radial LiDAR sampling, increased map coverage, and scan-to-scan limitations visible.
+
+![KITTI LiDAR BEV occupancy](figures/curated/kitti_lidar_bev.png)
+
+These values validate a short local pipeline. They are not full-sequence KITTI benchmark claims. See [the LiDAR odometry and BEV reference](docs/lidar_odometry_bev.md).
 
 TartanAir RGB-D loading and trajectory preview remain dataset-introduction diagnostics rather than algorithmic results.
 
@@ -119,7 +143,7 @@ Install and verify:
 uv sync --extra dev
 uv run pytest -q \
   tests/test_bundle_adjust.py \
-  tests/test_features.py \
+  tests/test_features.py tests/test_sfm_toy.py \
   tests/test_camera.py tests/test_two_view.py tests/test_ransac.py \
   tests/test_icp.py tests/test_tartanair.py tests/test_lidar_io.py \
   tests/test_lidar_odometry.py tests/test_trajectory.py \
@@ -134,10 +158,12 @@ uv run python scripts/make_figures.py \
   --figures geometry-ransac geometry-icp bundle-adjust \
   --output-dir figures/curated
 uv run python scripts/make_figures.py \
-  --figures tartanair-rgbd tartanair-matches tartanair-icp \
+  --figures tartanair-rgbd tartanair-matches tartanair-sfm tartanair-icp \
   --output-dir figures/curated \
   --tartanair-frame 1750 \
-  --tartanair-stride 5
+  --tartanair-stride 5 \
+  --tartanair-sfm-stride 1 \
+  --tartanair-sfm-frames 6
 ```
 
 Evaluate TartanAir RGB-D registration:
@@ -163,9 +189,9 @@ The project advances in this order:
 
 1. **Bundle adjustment:** numerical and visual engineering gate complete; human whiteboard signoff remains.
 2. **Reusable matching:** numerical, real-data, and visual gate complete.
-3. **Minimal SfM:** recognizable controlled-scene cloud, valid camera path, and target final reprojection error below 2 px.
+3. **Minimal SfM:** bounded engineering gate complete at 0.178 px RMSE; human visual/whiteboard signoff remains.
 4. **RGB-D evidence:** synthetic success and ground-truth-validated real failure are documented.
-5. **LiDAR evidence:** curated estimated-versus-GT trajectory, ATE/RPE, BEV, and drift explanation.
+5. **LiDAR evidence:** bounded trajectory/BEV engineering gate complete; human review remains.
 6. **Portfolio closeout:** tracked curated artifacts, reproducible commands, clean documentation, and practical CI.
 7. **World-model GO/NO-GO:** B1 versus T-GT on a small seeded clip set.
 8. **Geometry-quality study:** estimated/noisy/confidence-aware pose only after a GO.
@@ -198,8 +224,10 @@ The project makes no novelty, state-of-the-art, or completed research-paper clai
 - [3D vision story and checkpoints](docs/3d_vision_story.md)
 - [Bundle adjustment](docs/bundle_adjust.md)
 - [Classical feature matching](docs/feature_matching.md)
+- [Minimal sparse Structure from Motion](docs/sparse_sfm.md)
 - [Two-view geometry](docs/two_view_geometry.md)
 - [RANSAC](docs/ransac.md)
 - [ICP](docs/icp.md)
 - [TartanAir registration](docs/tartanair_registration.md)
+- [KITTI LiDAR odometry and BEV](docs/lidar_odometry_bev.md)
 - [Design decisions](docs/decisions.md)

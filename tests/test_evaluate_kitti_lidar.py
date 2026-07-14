@@ -64,31 +64,6 @@ def test_normalize_poses():
         evaluate_kitti_lidar.normalize_poses(np.ones((2, 3, 3)))
 
 
-def test_validate_pair_indices():
-    """Verify index validation logic handles distinctness and bounds."""
-    # Valid indices: no exception raised
-    evaluate_kitti_lidar.validate_pair_indices(1, 0, 10)
-    evaluate_kitti_lidar.validate_pair_indices(9, 5, 10)
-
-    # Same index
-    with pytest.raises(ValueError, match="must be distinct"):
-        evaluate_kitti_lidar.validate_pair_indices(3, 3, 10)
-
-    # Source index out of bounds
-    with pytest.raises(ValueError, match="Source index 10 out of range"):
-        evaluate_kitti_lidar.validate_pair_indices(10, 2, 10)
-
-    with pytest.raises(ValueError, match="Source index -1 out of range"):
-        evaluate_kitti_lidar.validate_pair_indices(-1, 2, 10)
-
-    # Target index out of bounds
-    with pytest.raises(ValueError, match="Target index 10 out of range"):
-        evaluate_kitti_lidar.validate_pair_indices(2, 10, 10)
-
-    with pytest.raises(ValueError, match="Target index -1 out of range"):
-        evaluate_kitti_lidar.validate_pair_indices(2, -1, 10)
-
-
 def test_make_json_safe():
     """Verify NumPy structures are correctly converted to JSON-native formats."""
     raw_data = {
@@ -138,6 +113,21 @@ def test_compute_metrics():
         evaluate_kitti_lidar.compute_metrics(short_est, short_gt)
 
 
+def test_compute_metrics_does_not_hide_metric_scale_error():
+    """Primary LiDAR ATE must not use the free scale allowed by monocular data."""
+    poses_gt = np.repeat(np.eye(4)[None], 4, axis=0)
+    poses_gt[:, :3, 3] = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [2.0, 1.0, 0.0]]
+    )
+    poses_est = poses_gt.copy()
+    poses_est[:, :3, 3] *= 2.0
+
+    metrics = evaluate_kitti_lidar.compute_metrics(poses_est, poses_gt)
+    assert metrics["rigid_aligned_ate_rmse_m"] > 0.1
+    assert metrics["sim3_aligned_ate_rmse_m"] < 1e-10
+    assert metrics["sim3_scale"] == pytest.approx(0.5)
+
+
 def test_generate_diagnostic_plot(tmp_path):
     """Verify that generate_diagnostic_plot successfully creates a figure and saves it."""
     # Synthetic inputs (no dataset on disk required)
@@ -169,3 +159,41 @@ def test_generate_diagnostic_plot(tmp_path):
     # Verify return type and file generation
     assert isinstance(fig, matplotlib.figure.Figure)
     assert output_png.exists()
+
+
+def test_generate_curated_trajectory_and_bev_figures(tmp_path):
+    poses_gt = np.repeat(np.eye(4)[None], 4, axis=0)
+    poses_gt[:, :3, 3] = np.array(
+        [[0.0, 0.0, 0.0], [0.4, 0.0, 0.0], [0.8, 0.1, 0.0], [1.2, 0.2, 0.0]]
+    )
+    poses_est = poses_gt.copy()
+    poses_est[:, 0, 3] *= 1.02
+    metrics = evaluate_kitti_lidar.compute_metrics(poses_est, poses_gt)
+    trajectory_path = tmp_path / "trajectory.png"
+    trajectory_figure = evaluate_kitti_lidar.generate_trajectory_figure(
+        poses_est,
+        poses_gt,
+        metrics,
+        [0, 1, 2, 3],
+        str(trajectory_path),
+    )
+    assert isinstance(trajectory_figure, matplotlib.figure.Figure)
+    assert trajectory_path.exists()
+
+    rng = np.random.default_rng(8)
+    scans = []
+    base = rng.uniform([0.0, -5.0, -2.0], [15.0, 5.0, 1.0], (1000, 3))
+    for frame in range(4):
+        scans.append(base - np.array([0.4 * frame, 0.0, 0.0]))
+    bev_path = tmp_path / "bev.png"
+    bev_figure, bev_metrics = evaluate_kitti_lidar.generate_bev_figure(
+        scans,
+        poses_est,
+        str(bev_path),
+        cell=0.2,
+    )
+    assert isinstance(bev_figure, matplotlib.figure.Figure)
+    assert bev_path.exists()
+    assert bev_metrics["accumulated_occupied_cells"] >= (
+        bev_metrics["single_scan_occupied_cells"]
+    )

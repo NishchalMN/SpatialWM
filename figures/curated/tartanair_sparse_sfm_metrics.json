@@ -1,0 +1,29 @@
+{
+  "sequence": "abandonedfactory/Easy/P000",
+  "requested_start_frame": 1750,
+  "requested_frame_stride": 1,
+  "requested_frame_count": 6,
+  "registered_image_indices": [
+    1750,
+    1751,
+    1752,
+    1753,
+    1754,
+    1755
+  ],
+  "initial_pair_relative_indices": [
+    0,
+    5
+  ],
+  "pose_convention": "world-to-camera",
+  "scale_convention": "initial translation unit; monocular scale arbitrary",
+  "n_registered_cameras": 6,
+  "n_points": 467,
+  "n_observations": 2277,
+  "median_track_length": 5.0,
+  "reprojection_rmse_before_px": 0.773442269138376,
+  "reprojection_rmse_after_px": 0.1778321207733608,
+  "sim3_alignment_scale_to_gt": 0.2939787444442888,
+  "sim3_aligned_ate_rmse_m": 0.0009714489657534396,
+  "interpretation": "bounded six-frame integration diagnostic; the very short aligned trajectory is not a benchmark result"
+}

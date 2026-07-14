@@ -1,0 +1,49 @@
+{
+  "dataset_identity": "KITTI raw sequence 2011_09_26 drive 0005 sync",
+  "source_url": "https://www.cvlibs.net/datasets/kitti/raw_data.php",
+  "frame_ids": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ],
+  "config": {
+    "voxel": 0.2,
+    "max_iters": 50,
+    "max_correspondence_distance": 1.0,
+    "bev_cell_m": 0.1
+  },
+  "trajectory_convention": {
+    "poses_estimated": "scan k to scan 0",
+    "poses_ground_truth": "Velodyne k to normalized Velodyne-0 world frame",
+    "primary_ate_alignment": "rigid SE(3) position alignment; scale fixed to 1",
+    "rpe_delta_frames": 1
+  },
+  "metrics": {
+    "ate": 0.09388094706753534,
+    "rpe": 0.061191491161887566,
+    "raw_position_rmse_m": 0.17727927798870619,
+    "rigid_aligned_ate_rmse_m": 0.09388094706753534,
+    "sim3_aligned_ate_rmse_m": 0.04807199692864412,
+    "sim3_scale": 0.9166858359830297,
+    "final_raw_position_error_m": 0.320387133719495,
+    "mean_step_translation_error_m": 0.061191491161887566,
+    "max_step_translation_error_m": 0.09779810564728948,
+    "mean_step_rotation_error_deg": 0.10787259535580215,
+    "max_step_rotation_error_deg": 0.19238642311588253
+  },
+  "bev": {
+    "bev_cell_m": 0.1,
+    "single_scan_cropped_points": 79471,
+    "single_scan_occupied_cells": 22387,
+    "accumulated_cropped_points": 851528,
+    "accumulated_occupied_cells": 79725
+  },
+  "limitations": "Diagnostic-only evaluation on a short raw slice; does not represent a full benchmark. Drift accumulates because frame-to-frame registrations compose multiplicatively without loop closure, scan-to-map registration, or global pose-graph optimization."
+}
