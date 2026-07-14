@@ -40,6 +40,12 @@ the synchronized timestamps distributed with the drive. Calibration is composed 
 OXTS is retained as evaluation ground truth. It is not silently supplied as an odometry
 prior. That distinction prevents ground-truth leakage into the estimated trajectory.
 
+The same bounded drive is deliberately reused across the portfolio story: `image_02` feeds
+real-world monocular SfM, Velodyne plus camera calibration produces the projection check,
+successive Velodyne scans drive odometry and BEV accumulation, and OXTS evaluates trajectory
+shape. These are coordinated experiments on synchronized data, not a claim of camera-LiDAR-
+GPS/IMU estimator fusion.
+
 ## Visual calibration check
 
 The strongest quick check of a LiDAR-camera calibration is to transform each Velodyne point

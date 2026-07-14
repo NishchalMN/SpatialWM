@@ -62,14 +62,17 @@ consensus at 99.2% precision and 100% recall.
 ### 3. Incremental sparse SfM
 
 The transparent SfM integration connects matching, F/E recovery, cheirality, triangulation,
-PnP registration, landmark expansion, and bundle adjustment. On TartanAir P000 frames
-1750–1769 it registers all 20 cameras, grows from 416 initial landmarks to 2,963 landmarks,
-records 12,457 observations, and reduces reprojection RMSE from 0.661 px to **0.177 px**.
+PnP registration, landmark expansion, and bundle adjustment. On 20 real KITTI camera frames
+sampled from raw drive 0005, it registers all 20 views, grows from 456 initial landmarks to
+**3,309 landmarks**, records 9,215 observations, and reduces reprojection RMSE from 0.451 px
+to **0.264 px**.
 
-![TartanAir incremental sparse SfM](figures/curated/tartanair_sparse_sfm.png)
+![KITTI real-world incremental sparse SfM](figures/curated/kitti_sparse_sfm.png)
 
-The monocular trajectory is Sim(3)-aligned only for a short diagnostic. Its metric-scale ATE
-is not a portfolio claim. See [incremental sparse SfM](docs/sparse_sfm.md).
+The figure connects image observations, map expansion, the coloured outdoor point cloud, and
+the camera path. The monocular trajectory is Sim(3)-aligned only as a diagnostic; its aligned
+ATE is not a metric-scale portfolio claim. TartanAir remains a controlled RGB-D and SfM
+regression dataset. See [incremental sparse SfM](docs/sparse_sfm.md).
 
 ### 4. Bundle adjustment and RGB-D registration
 
@@ -113,24 +116,22 @@ uv run pytest -q
 uv run ruff check src tests scripts
 ```
 
-Generate the TartanAir reconstruction:
-
-```bash
-uv run python scripts/make_figures.py \
-  --figures tartanair-sfm \
-  --output-dir figures/curated \
-  --tartanair-frame 1750 \
-  --tartanair-sfm-stride 1 \
-  --tartanair-sfm-frames 20
-```
-
-Download and evaluate the bounded KITTI slice:
+Download and validate the bounded KITTI slice:
 
 ```bash
 uv run python scripts/download_kitti_slice.py \
   --frames 100 --output-dir data/raw/kitti --max-gb 1.0 --download
 uv run python scripts/build_sensor_manifest.py \
   --frames 100 --output-dir data/processed/manifests
+```
+
+Generate the real-world camera reconstruction and evaluate LiDAR odometry/BEV:
+
+```bash
+uv run python scripts/evaluate_kitti_sfm.py \
+  --kitti-root data/raw/kitti \
+  --start 0 --stride 2 --frames 20 \
+  --output-dir figures/curated
 uv run python scripts/evaluate_kitti_lidar.py \
   --kitti-root data/raw/kitti --frames 100 --output-dir figures/curated
 ```

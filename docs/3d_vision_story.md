@@ -51,11 +51,11 @@ There are three connected threads:
 | Stage | Core question | Repository component | Status |
 |---|---|---|---|
 | 0. Ingestion, frames, calibration | What sensor, time, and coordinate frame is each number in? | `data/sensors.py`, `geometry/camera.py` | Working on TartanAir and KITTI |
-| 1. Correspondences | Which pixels describe the same physical point? | `geometry/features.py`, OpenCV matcher | Working on synthetic and TartanAir data |
+| 1. Correspondences | Which pixels describe the same physical point? | `geometry/features.py`, OpenCV matcher | Working on synthetic, TartanAir, and real KITTI data |
 | 2. Robust two-view geometry | What camera motion explains the matches? | `geometry/ransac.py`, `geometry/two_view.py` | Working |
-| 3. Triangulation | Where is the matched point in 3D? | `geometry/two_view.py` | Working synthetically |
-| 4. Bundle adjustment | Which cameras and points best explain all images jointly? | `geometry/bundle_adjust.py` | Working synthetically; human review remains |
-| 5. Sparse SfM | Can the stages reconstruct and expand one real scene? | `geometry/sfm_toy.py` | Working on a controlled 20-frame TartanAir scene; human review remains |
+| 3. Triangulation | Where is the matched point in 3D? | `geometry/two_view.py` | Unit-tested and integrated into real KITTI SfM |
+| 4. Bundle adjustment | Which cameras and points best explain all images jointly? | `geometry/bundle_adjust.py` | Unit-tested and integrated into real KITTI SfM |
+| 5. Sparse SfM | Can the stages reconstruct and expand one real scene? | `geometry/sfm_toy.py` | Real 20-view KITTI gate complete; TartanAir retained as controlled regression |
 | 6. RGB-D registration | Can direct depth recover relative motion? | `geometry/icp.py`, `geometry/tartanair.py` | Synthetic success and real failure are visually/quantitatively documented |
 | 7. LiDAR odometry and BEV | Can repeated 3D scans form a trajectory and map view? | `geometry/lidar_odometry.py`, `eval/trajectory.py`, `perception/voxelize.py` | Bounded numerical and visual gate complete; human review remains |
 | 8. World-model bridge | Does measured geometry improve future prediction? | `research/world-model` branch | Planned after portfolio release |
@@ -339,10 +339,12 @@ reprojection RMSE. It selects a verified initial pair, registers nearby views wi
 RANSAC, triangulates unmatched tracks after pose recovery, and globally refines cameras and
 points with bundle adjustment.
 
-The controlled P000 frames 1750–1769 diagnostic registers all 20 cameras, grows from 416
-initial landmarks to 2,963 landmarks across 12,457 observations, and reduces reprojection
-RMSE from 0.661 px to 0.177 px. Points, poses, tracks, sources, confidence, metrics, and the
-inspected figure are saved reproducibly.
+The primary KITTI diagnostic samples 20 real `image_02` views from absolute frames 0–38. It
+registers all 20 cameras, grows from 456 initial landmarks to 3,309 landmarks across 9,215
+observations, and reduces reprojection RMSE from 0.451 px to 0.264 px. The figure connects
+real image observations to the coloured sparse map, map growth, and the OXTS path shape.
+Points, poses, tracks, sources, confidence, metrics, and the inspected figure are saved
+reproducibly. TartanAir remains a secondary controlled RGB-D/SfM regression.
 
 COLMAP can later act as a reference baseline; integrating it is not a substitute for understanding this transparent pipeline.
 

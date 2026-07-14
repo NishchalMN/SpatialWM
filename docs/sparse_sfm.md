@@ -74,31 +74,57 @@ probability; it is an auditable signal for later geometry-quality experiments.
 
 All registered poses, initial landmarks, and accepted observations are passed to sparse bundle adjustment. The first pose and one point-depth value fix the global similarity gauge. The result minimizes one coherent reprojection objective rather than leaving independently estimated camera poses disconnected.
 
-## Current controlled-scene evidence
+## Primary real-world evidence
 
-The curated TartanAir diagnostic uses `abandonedfactory/Easy/P000`, frames 1750–1769, with the documented approximate intrinsics `fx=fy=320, cx=320, cy=240`.
+The portfolio diagnostic uses rectified `image_02` from KITTI raw drive
+`2011_09_26_drive_0005_sync`. It samples absolute frames 0–38 at stride 2, giving 20 views
+over a 12.56 m OXTS path. The same synchronized drive also supplies the project's
+LiDAR-camera calibration check, Velodyne odometry, and BEV map, so the image and LiDAR stages
+form one coherent real-world sensor story without claiming that their estimators are fused.
 
 | Measurement | Result |
 |---|---:|
 | Requested / registered frames | 20 / 20 |
-| Initial pair | relative frames 0 and 7 |
-| Initial / expanded landmarks | 416 / 2,963 |
-| Pixel observations | 12,457 |
-| Median track length | 3 views |
-| Reprojection RMSE before BA | 0.661 px |
-| Reprojection RMSE after BA | 0.177 px |
-| Short-path Sim(3)-aligned ATE RMSE | 0.0013 m |
+| Initial pair | relative views 0 and 2; absolute frames 0 and 4 |
+| Initial / final landmarks | 456 / 3,309 |
+| Newly triangulated landmarks | 2,853 |
+| Pixel observations | 9,215 |
+| Median track length | 2 views |
+| Reprojection RMSE before BA | 0.451 px |
+| Reprojection RMSE after BA | 0.264 px |
+| Sim(3)-aligned ATE RMSE | 0.072 m, diagnostic only |
 
-The ATE number is reported only as a 20-nearby-frame integration check. Monocular centres are similarity-aligned to ground truth, and such a short smooth path can be fit very closely; this is not an odometry benchmark or evidence of long-term drift performance. The defensible headline is map expansion plus reprojection consistency, not the aligned ATE.
+The defensible headline is the real-image map expansion and global reprojection consistency.
+Monocular SfM cannot recover metric scale, so the displayed trajectory and point cloud are
+Sim(3)-aligned to OXTS only to check path shape and scene orientation. The aligned ATE is not
+an odometry benchmark or a metric-scale resume claim.
 
-![TartanAir sparse SfM reconstruction](../figures/curated/tartanair_sparse_sfm.png)
+![KITTI real-world sparse SfM reconstruction](../figures/curated/kitti_sparse_sfm.png)
 
-The figure was visually checked for coherent reference observations, a finite coloured sparse cloud, ordered camera motion matching the local GT direction, and a clearly visible reprojection-error reduction. The machine-readable reconstruction and metrics are saved beside the figure.
+The figure was visually checked for observations that follow stable scene structure, a
+recognizable outdoor sparse cloud, ordered camera motion matching the OXTS path shape, and a
+visible before/after reprojection reduction. To keep the map readable, it displays 1,175
+landmarks with at least three supporting views and a bounded camera distance while preserving
+all 3,309 points in the saved reconstruction.
+
+## Secondary controlled regression
+
+TartanAir `abandonedfactory/Easy/P000` remains useful because it provides paired RGB, dense
+depth, and exact camera poses. Its 20-frame SfM regression registers 20/20 cameras, expands
+416 initial landmarks to 2,963, and reaches 0.177 px reprojection RMSE. It is retained for
+controlled RGB-D checks and future same-dataset world-model experiments, but it is no longer
+the portfolio hero visual.
 
 ## Reproduce
 
 ```bash
 uv run pytest -q tests/test_sfm_toy.py
+uv run python scripts/evaluate_kitti_sfm.py \
+  --kitti-root data/raw/kitti \
+  --start 0 --stride 2 --frames 20 \
+  --output-dir figures/curated
+
+# Optional controlled TartanAir regression
 uv run python scripts/make_figures.py \
   --figures tartanair-sfm \
   --output-dir figures/curated \
@@ -109,6 +135,9 @@ uv run python scripts/make_figures.py \
 
 Outputs:
 
+- `figures/curated/kitti_sparse_sfm.png`;
+- `figures/curated/kitti_sparse_sfm_metrics.json`;
+- `figures/curated/kitti_sparse_sfm_reconstruction.npz`;
 - `figures/curated/tartanair_sparse_sfm.png`;
 - `figures/curated/tartanair_sparse_sfm_metrics.json`;
 - `figures/curated/tartanair_sparse_sfm_reconstruction.npz` containing points, poses,
