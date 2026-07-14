@@ -1,9 +1,4 @@
-"""KITTI / SemanticKITTI I/O utilities.
-
-KITTI velodyne scans are flat float32 binaries of [x, y, z, reflectance]
-records. SemanticKITTI labels are uint32 per point; the lower 16 bits are the
-semantic class, the upper 16 bits the instance id.
-"""
+"""KITTI Velodyne scan I/O utilities."""
 
 from __future__ import annotations
 
@@ -32,19 +27,3 @@ def load_kitti_points(path: str) -> np.ndarray:
         (N,3) float32 array of [x, y, z].
     """
     return load_kitti_bin(path)[:, :3]
-
-
-def load_semantickitti_labels(path: str) -> tuple[np.ndarray, np.ndarray]:
-    """Load SemanticKITTI per-point labels.
-
-    Args:
-        path: path to a `*.label` file (uint32 per point).
-
-    Returns:
-        (semantic, instance) — two (N,) uint32 arrays. `semantic` is the lower
-        16 bits (class id); `instance` is the upper 16 bits.
-    """
-    raw = np.fromfile(path, dtype=np.uint32)
-    semantic = raw & 0xFFFF
-    instance = raw >> 16
-    return semantic, instance

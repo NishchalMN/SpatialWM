@@ -4,11 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from spatialwm.perception.lidar_io import (
-    load_kitti_bin,
-    load_kitti_points,
-    load_semantickitti_labels,
-)
+from spatialwm.perception.lidar_io import load_kitti_bin, load_kitti_points
 
 
 def test_load_kitti_bin_roundtrip(tmp_path):
@@ -31,16 +27,3 @@ def test_load_kitti_points_xyz_only(tmp_path):
     pts = load_kitti_points(str(p))
     assert pts.shape == (2, 3)
     np.testing.assert_array_equal(pts, arr[:, :3])
-
-
-def test_load_semantickitti_labels_decode(tmp_path):
-    # semantic in lower 16 bits, instance in upper 16 bits
-    sem_in = np.array([10, 40, 252], dtype=np.uint32)
-    inst_in = np.array([0, 3, 7], dtype=np.uint32)
-    raw = (inst_in << 16) | sem_in
-    p = tmp_path / "scan.label"
-    raw.astype(np.uint32).tofile(p)
-
-    semantic, instance = load_semantickitti_labels(str(p))
-    np.testing.assert_array_equal(semantic, sem_in)
-    np.testing.assert_array_equal(instance, inst_in)

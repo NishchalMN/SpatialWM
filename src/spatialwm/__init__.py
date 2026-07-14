@@ -1,1 +1,1 @@
-"""SpatialWM — geometry-conditioned latent world model + 3D-perception infra."""
+"""SpatialWM: calibrated multi-sensor geometry and 3D perception."""

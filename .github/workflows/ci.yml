@@ -1,4 +1,4 @@
-name: active-geometry
+name: perception-portfolio
 
 on:
   push:
@@ -19,5 +19,5 @@ jobs:
         run: uv sync --extra dev
       - name: Lint
         run: uv run ruff check src tests scripts
-      - name: Test active scope and collect deferred contracts
+      - name: Test portfolio scope
         run: uv run pytest -q

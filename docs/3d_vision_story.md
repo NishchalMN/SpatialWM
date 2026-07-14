@@ -136,7 +136,8 @@ The appearance matcher proposes “these might be the same point.” RANSAC late
 
 ### Repository target
 
-Add a focused classical module such as `geometry/features.py` around a minimal OpenCV SIFT or ORB pipeline. Keep `perception/features_2d.py` for the later learned DINO feature path. The classical module should return keypoint coordinates, descriptor matches, and enough bookkeeping to distinguish:
+`geometry/features.py` wraps a focused OpenCV SIFT or ORB pipeline. It returns keypoint
+coordinates, descriptor matches, and enough bookkeeping to distinguish:
 
 - raw descriptor matches;
 - matches after ratio/mutual filtering;
