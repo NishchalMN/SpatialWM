@@ -62,7 +62,7 @@ convention, or camera projection would produce an obvious spatial mismatch.
 
 ```bash
 uv run python scripts/download_kitti_slice.py \
-  --frames 100 --output-dir data/raw/kitti --max-gb 1.0 --download
+  --drive 0005 --frames 100 --output-dir data/raw/kitti --max-gb 1.0 --download
 uv run python scripts/build_sensor_manifest.py \
   --frames 100 \
   --output-dir data/processed/manifests \

@@ -57,8 +57,9 @@ better one-step errors and internal ICP diagnostics, but worse global ATE and en
 Repeatedly fitting a locally self-consistent map can reinforce small systematic bias. It also
 shows why fitness and inlier RMSE are confidence features, not substitutes for ground truth.
 
-The portfolio trajectory therefore remains scan-to-scan. The submap path is a documented
-sensitivity experiment and a useful geometry-quality case for the research branch.
+The portfolio trajectory therefore remains scan-to-scan. The submap path is retained as a
+documented sensitivity experiment showing that local fit metrics need not predict global
+trajectory accuracy.
 
 ## BEV return-density map
 
@@ -73,11 +74,27 @@ The accumulated map contains 9,660,016 cropped/transformed points. Increased den
 coverage are visually useful, but they are not a map-accuracy metric because every pose error
 is written into the raster.
 
+## Frozen cross-drive check
+
+One unchanged 0.20 m voxel / 1.0 m correspondence configuration was evaluated over 80 frames
+from three KITTI raw drives:
+
+| Drive | Scan-to-scan ATE | Five-scan submap ATE | Mean step translation error | Mean ICP fitness |
+|---|---:|---:|---:|---:|
+| 0001 | 0.713 m | 0.528 m | 0.105 m | 0.981 |
+| 0005 | 0.283 m | 0.349 m | 0.050 m | 0.988 |
+| 0011 | 0.162 m | 0.160 m | 0.057 m | 0.972 |
+
+The 0.283 m median scan-to-scan ATE is less important than the spread: drive 0001 is much
+harder even though ICP fitness remains high. The submap improves two drives and worsens one,
+so the next estimator must be accepted on multi-sequence criteria rather than one tuned
+trajectory. See [the complete protocol](kitti_multisequence_evaluation.md).
+
 ## Reproduce
 
 ```bash
 uv run python scripts/download_kitti_slice.py \
-  --frames 100 --output-dir data/raw/kitti --max-gb 1.0 --download
+  --drive 0005 --frames 100 --output-dir data/raw/kitti --max-gb 1.0 --download
 uv run python scripts/evaluate_kitti_lidar.py \
   --kitti-root data/raw/kitti \
   --frames 100 \

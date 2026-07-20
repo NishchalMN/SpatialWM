@@ -1,0 +1,122 @@
+{
+  "suite": "KITTI raw bounded multi-sequence perception robustness",
+  "frozen_config": {
+    "drives": [
+      "0001",
+      "0005",
+      "0011"
+    ],
+    "sfm_views": 16,
+    "sfm_stride": 2,
+    "lidar_frames": 80,
+    "sfm_detector": "SIFT",
+    "lidar_voxel_m": 0.2,
+    "lidar_max_correspondence_distance_m": 1.0,
+    "per_drive_tuning": false
+  },
+  "sequence_count": 3,
+  "successful_sfm_sequences": 3,
+  "successful_lidar_sequences": 3,
+  "aggregate": {
+    "mean_sfm_registration_rate": 1.0,
+    "median_sfm_reprojection_rmse_px": 0.22146684234979921,
+    "median_lidar_scan_to_scan_ate_rmse_m": 0.28301622999213033,
+    "worst_lidar_scan_to_scan_ate_rmse_m": 0.7131627131747045,
+    "submap_ate_improvement_count": 2,
+    "median_sfm_runtime_per_view_s": 1.0740173437498015,
+    "median_lidar_runtime_per_frame_s": 0.3198624890625069
+  },
+  "sequences": [
+    {
+      "date": "2011_09_26",
+      "drive": "0001",
+      "sfm": {
+        "status": "ok",
+        "requested_views": 16,
+        "registered_views": 16,
+        "registration_rate": 1.0,
+        "landmarks": 3520,
+        "observations": 9052,
+        "reprojection_rmse_px": 0.21524475753935748,
+        "sim3_aligned_ate_rmse_m_diagnostic_only": 0.04095448355892057,
+        "runtime_s": 17.184277499996824,
+        "runtime_per_requested_view_s": 1.0740173437498015
+      },
+      "lidar": {
+        "status": "ok",
+        "frames": 80,
+        "scan_to_scan_ate_rmse_m": 0.7131627131747045,
+        "scan_to_submap_ate_rmse_m": 0.5281843652646364,
+        "raw_endpoint_error_m": 4.616082330526902,
+        "mean_step_translation_error_m": 0.10476965423967681,
+        "mean_step_rotation_error_deg": 0.04879621182027618,
+        "mean_icp_fitness": 0.9805930497354827,
+        "minimum_icp_fitness": 0.9158606522297356,
+        "submap_improves_ate": true,
+        "runtime_s": 27.034142916003475,
+        "runtime_per_frame_s": 0.3379267864500434
+      }
+    },
+    {
+      "date": "2011_09_26",
+      "drive": "0005",
+      "sfm": {
+        "status": "ok",
+        "requested_views": 16,
+        "registered_views": 16,
+        "registration_rate": 1.0,
+        "landmarks": 2357,
+        "observations": 6734,
+        "reprojection_rmse_px": 0.2648853205891006,
+        "sim3_aligned_ate_rmse_m_diagnostic_only": 0.06297383657990893,
+        "runtime_s": 13.824572917015757,
+        "runtime_per_requested_view_s": 0.8640358073134848
+      },
+      "lidar": {
+        "status": "ok",
+        "frames": 80,
+        "scan_to_scan_ate_rmse_m": 0.28301622999213033,
+        "scan_to_submap_ate_rmse_m": 0.3489138111805421,
+        "raw_endpoint_error_m": 0.9707770537092368,
+        "mean_step_translation_error_m": 0.050326210671129065,
+        "mean_step_rotation_error_deg": 0.09523443423541914,
+        "mean_icp_fitness": 0.9878206842876279,
+        "minimum_icp_fitness": 0.9760017921648791,
+        "submap_improves_ate": false,
+        "runtime_s": 25.588999125000555,
+        "runtime_per_frame_s": 0.3198624890625069
+      }
+    },
+    {
+      "date": "2011_09_26",
+      "drive": "0011",
+      "sfm": {
+        "status": "ok",
+        "requested_views": 16,
+        "registered_views": 16,
+        "registration_rate": 1.0,
+        "landmarks": 4723,
+        "observations": 11784,
+        "reprojection_rmse_px": 0.22146684234979921,
+        "sim3_aligned_ate_rmse_m_diagnostic_only": 0.0539842679505044,
+        "runtime_s": 29.199811416998273,
+        "runtime_per_requested_view_s": 1.824988213562392
+      },
+      "lidar": {
+        "status": "ok",
+        "frames": 80,
+        "scan_to_scan_ate_rmse_m": 0.16193934317441347,
+        "scan_to_submap_ate_rmse_m": 0.15959418092985436,
+        "raw_endpoint_error_m": 1.0274975153346038,
+        "mean_step_translation_error_m": 0.05712437603381956,
+        "mean_step_rotation_error_deg": 0.06305386685824853,
+        "mean_icp_fitness": 0.9720549158915976,
+        "minimum_icp_fitness": 0.951910137046497,
+        "submap_improves_ate": true,
+        "runtime_s": 22.144566250004573,
+        "runtime_per_frame_s": 0.27680707812505717
+      }
+    }
+  ],
+  "claim_boundary": "Bounded raw-drive diagnostics with one frozen configuration; not a KITTI odometry or reconstruction benchmark submission. Monocular Sim(3) ATE remains diagnostic only."
+}

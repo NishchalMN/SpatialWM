@@ -112,8 +112,18 @@ all 3,309 points in the saved reconstruction.
 TartanAir `abandonedfactory/Easy/P000` remains useful because it provides paired RGB, dense
 depth, and exact camera poses. Its 20-frame SfM regression registers 20/20 cameras, expands
 416 initial landmarks to 2,963, and reaches 0.177 px reprojection RMSE. It is retained for
-controlled RGB-D checks and future same-dataset world-model experiments, but it is no longer
-the portfolio hero visual.
+controlled RGB-D and coordinate-regression checks, but it is no longer the portfolio hero
+visual.
+
+## Frozen cross-drive check
+
+The same SIFT/RANSAC/PnP/BA configuration also registers all 16 requested views on KITTI raw
+drives 0001, 0005, and 0011. Final reprojection RMSE is 0.215, 0.265, and 0.221 px while map
+size varies from 2,357 to 4,723 landmarks. This supports cross-scene integration robustness
+without changing the core claim: low reprojection error is an image-consistency diagnostic,
+not proof of metric scale or long-horizon SLAM accuracy.
+
+See [the frozen multi-sequence protocol](kitti_multisequence_evaluation.md).
 
 ## Reproduce
 

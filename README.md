@@ -27,6 +27,21 @@ calibration + poses    │                                ↓
 Read [the stage-by-stage 3D vision story](docs/3d_vision_story.md) for the intuition,
 coordinate contracts, failure modes, and completion checks.
 
+## Results snapshot
+
+| Capability | Bounded evidence |
+|---|---|
+| Sensor calibration | 20,468 / 123,397 Velodyne returns project into KITTI frame 0 and follow image structure |
+| Real-world sparse SfM hero | 20/20 registered views, 3,309 landmarks, 0.264 px BA reprojection RMSE |
+| Frozen three-drive SfM suite | 48/48 registered views, 0.221 px median BA reprojection RMSE |
+| KITTI LiDAR odometry hero | 0.318 m rigid-aligned ATE over 100 frames, metric scale fixed |
+| Frozen three-drive LiDAR suite | 0.283 m median rigid-aligned ATE over 80 frames per drive |
+| BEV mapping | 9.66 million accumulated cropped returns at 0.10 m cell size |
+
+The hero numbers retain the most interpretable single-sequence visuals. The multi-sequence
+suite applies one configuration without per-drive tuning and exposes both median and worst-case
+behavior. Neither is presented as a KITTI benchmark submission.
+
 ## Verified evidence
 
 ### 1. Synchronized sensor ingestion and calibration
@@ -98,6 +113,22 @@ bird's-eye-view return-density map.
 
 See [LiDAR odometry, local submaps, and BEV](docs/lidar_odometry_bev.md).
 
+### 6. Frozen multi-sequence robustness
+
+The same settings were applied to KITTI raw drives 0001, 0005, and 0011: 16 monocular views
+and 80 LiDAR frames per drive. All 48 requested SfM views register successfully. Median SfM
+reprojection RMSE is **0.221 px**, while median rigid-aligned scan-to-scan LiDAR ATE is
+**0.283 m**. The worst LiDAR ATE is 0.713 m on drive 0001, which is retained rather than
+hidden by reporting only the best drive.
+
+The five-scan submap improves ATE on two of three drives but worsens it on drive 0005. This
+supports the narrower conclusion that submaps change the local/global error tradeoff; they are
+not a universally better estimator.
+
+![KITTI three-drive frozen-configuration summary](figures/curated/kitti_multisequence_summary.png)
+
+See [the multi-sequence evaluation protocol and interpretation](docs/kitti_multisequence_evaluation.md).
+
 ## Reproduce
 
 ```bash
@@ -110,7 +141,7 @@ Download and validate the bounded KITTI slice:
 
 ```bash
 uv run python scripts/download_kitti_slice.py \
-  --frames 100 --output-dir data/raw/kitti --max-gb 1.0 --download
+  --drive 0005 --frames 100 --output-dir data/raw/kitti --max-gb 1.0 --download
 uv run python scripts/build_sensor_manifest.py \
   --frames 100 --output-dir data/processed/manifests
 ```
@@ -124,6 +155,20 @@ uv run python scripts/evaluate_kitti_sfm.py \
   --output-dir figures/curated
 uv run python scripts/evaluate_kitti_lidar.py \
   --kitti-root data/raw/kitti --frames 100 --output-dir figures/curated
+```
+
+Run the frozen three-drive robustness suite:
+
+```bash
+uv run python scripts/download_kitti_slice.py \
+  --drive 0001 --frames 80 --output-dir data/raw/kitti --max-gb 0.5 --download
+uv run python scripts/download_kitti_slice.py \
+  --drive 0011 --frames 80 --output-dir data/raw/kitti --max-gb 1.0 --download
+uv run python scripts/evaluate_kitti_suite.py \
+  --drives 0001 0005 0011 \
+  --sfm-views 16 --sfm-stride 2 --lidar-frames 80 \
+  --runs-dir data/processed/kitti_multisequence \
+  --output-dir figures/curated
 ```
 
 Raw data and generated manifests are not committed. Curated figures, JSON metrics, and compact
@@ -155,3 +200,4 @@ visuals. It is not described as “from scratch.”
 - [ICP](docs/icp.md)
 - [TartanAir registration](docs/tartanair_registration.md)
 - [KITTI LiDAR odometry and BEV](docs/lidar_odometry_bev.md)
+- [KITTI multi-sequence robustness](docs/kitti_multisequence_evaluation.md)

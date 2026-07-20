@@ -121,16 +121,12 @@ def _demo():
     N = 10000
     points = np.random.randn(N, 3).astype(np.float32) * 10.0
 
-    try:
-        occ_grid = voxelize(points, voxel=0.1)
-        print(
-            f"Voxelized: origin={occ_grid.origin}, voxel={occ_grid.voxel}, "
-            f"grid shape={occ_grid.grid.shape}"
-        )
-    except NotImplementedError:
-        print("voxelize not implemented yet")
+    occ_grid = voxelize(points, voxel=0.1)
+    print(
+        f"Voxelized: origin={occ_grid.origin}, voxel={occ_grid.voxel}, "
+        f"grid shape={occ_grid.grid.shape}"
+    )
 
 
 if __name__ == "__main__":
     _demo()
-

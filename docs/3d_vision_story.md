@@ -1,12 +1,14 @@
 # The SpatialWM 3D Vision Story
 
-## Pixels to motion, structure, and prediction
+## Pixels to motion, structure, and mapping
 
 SpatialWM is easiest to understand as one question asked at increasing levels of difficulty:
 
-> From what a moving camera or LiDAR sees, can we recover how the observer moved, reconstruct the stable 3D world, quantify the reliability of that reconstruction, and use the result to predict what will be seen next?
+> From what a moving camera or LiDAR sees, can we recover how the observer moved, reconstruct
+> stable 3D structure, and quantify when the resulting trajectory or map should be trusted?
 
-The classical 3D portion is not preliminary busywork. It creates the geometry, evaluation methods, and failure signals that make the later world-model experiment meaningful.
+The project connects classical geometry modules into an evaluated perception pipeline rather
+than treating feature matching, registration, and mapping as isolated demonstrations.
 
 ## The complete story at a glance
 
@@ -32,19 +34,15 @@ flowchart LR
     N --> O[Accumulated trajectory]
     O --> P[ATE / RPE and BEV]
 
-    G --> Q[Estimated motion and geometry quality]
+    G --> Q[Evaluated structure and motion]
     K --> Q
     P --> Q
-    R[Frozen visual latents] --> S[Future-latent predictor]
-    Q --> S
-    S --> T[Does geometry help by motion and horizon?]
 ```
 
-There are three connected threads:
+There are two connected estimator threads built on one sensor contract:
 
 1. **Images to sparse 3D:** infer correspondences, camera motion, and scene points.
 2. **Depth/LiDAR to motion:** align measured 3D point clouds and accumulate a trajectory.
-3. **Geometry to prediction:** condition a visual predictor on motion, then vary motion quality to see when geometry helps.
 
 ## Status map
 
@@ -55,10 +53,9 @@ There are three connected threads:
 | 2. Robust two-view geometry | What camera motion explains the matches? | `geometry/ransac.py`, `geometry/two_view.py` | Working |
 | 3. Triangulation | Where is the matched point in 3D? | `geometry/two_view.py` | Unit-tested and integrated into real KITTI SfM |
 | 4. Bundle adjustment | Which cameras and points best explain all images jointly? | `geometry/bundle_adjust.py` | Unit-tested and integrated into real KITTI SfM |
-| 5. Sparse SfM | Can the stages reconstruct and expand one real scene? | `geometry/sfm_toy.py` | Real 20-view KITTI gate complete; TartanAir retained as controlled regression |
+| 5. Sparse SfM | Can the stages reconstruct and expand real scenes? | `geometry/sfm_toy.py` | Real KITTI hero plus frozen three-drive gate complete; TartanAir retained as controlled regression |
 | 6. RGB-D registration | Can direct depth recover relative motion? | `geometry/icp.py`, `geometry/tartanair.py` | Synthetic success and real failure are visually/quantitatively documented |
-| 7. LiDAR odometry and BEV | Can repeated 3D scans form a trajectory and map view? | `geometry/lidar_odometry.py`, `eval/trajectory.py`, `perception/voxelize.py` | Bounded numerical and visual gate complete; human review remains |
-| 8. World-model bridge | Does measured geometry improve future prediction? | `research/world-model` branch | Planned after portfolio release |
+| 7. LiDAR odometry and BEV | Can repeated 3D scans form a trajectory and map view? | `geometry/lidar_odometry.py`, `eval/trajectory.py`, `perception/voxelize.py` | Inspected 100-frame hero plus frozen three-drive gate complete |
 
 ---
 
@@ -441,7 +438,8 @@ project compares the transparent scan-to-scan baseline with a bounded five-scan 
 
 ATE measures global trajectory disagreement after an allowed alignment. RPE measures local relative-motion disagreement over a selected step interval. They answer different questions: “where did the whole trajectory end up?” versus “how wrong was each motion increment?”
 
-BEV collapses the 3D scan onto a top-down occupancy grid. It provides an intuitive spatial representation and later can act as an interpretable world-model target/probe.
+BEV collapses the 3D scan onto a top-down grid. It provides an intuitive spatial summary of
+coverage and accumulated structure while making trajectory drift visually apparent.
 
 ### Repository implementation
 
@@ -462,7 +460,7 @@ quality.
 - synthetic pairwise and accumulation tests;
 - estimated and aligned-GT trajectories on identical axes;
 - ATE/RPE definitions, alignment policy, units, and sequence length stated;
-- BEV occupancy from the same sensor story;
+- BEV return density from the same sensor story;
 - drift or registration quality plotted over time;
 - known limitations: no loop closure or global pose graph; bounded sequence.
 
@@ -476,58 +474,6 @@ quality.
 - reporting a very short sequence as a benchmark.
 
 Read: [KITTI LiDAR odometry, trajectory error, and BEV](lidar_odometry_bev.md).
-
----
-
-## Stage 8 — From classical geometry to a world-model experiment
-
-### The question
-
-Does explicit ego-motion make a visual predictor better at forecasting future representations, and how does that depend on the accuracy of the geometry?
-
-### Intuition
-
-A visual world model receives previous visual representations and predicts a future representation. An action-free model must infer both scene dynamics and camera motion from appearance. A geometry-conditioned model is told how the camera moved, potentially making future-view prediction easier.
-
-The scientifically useful comparison is a quality ladder:
-
-| Model | Geometry input | Question |
-|---|---|---|
-| B1 | none | How well can visual history predict the future alone? |
-| T-GT | ground-truth relative pose | Is perfect motion information useful at all? |
-| T-EST | pose from the classical pipeline | Does practical estimated geometry retain the benefit? |
-| T-NOISE | controlled corruption of GT pose | At what pose error does conditioning stop helping? |
-| T-GATED | estimated pose plus confidence | Can the model learn when to trust geometry? |
-
-Start only with B1 versus T-GT on a small fixed clip set. If perfect pose does not help after careful debugging, more pose estimators and architectures will not answer the question.
-
-### Why the classical stages matter here
-
-- Camera/frame discipline prevents conditioning on an inverted or inconsistent pose.
-- Two-view/ICP/LiDAR evaluation supplies realistic pose-error distributions.
-- Failure metrics can become confidence inputs for T-GATED.
-- BEV/depth can serve as interpretable probes, rather than relying only on latent loss.
-- Motion bins and trajectory metrics define meaningful evaluation slices.
-
-TartanAir and KITTI remain separate experimental tracks. T-EST for a TartanAir visual model
-must come from TartanAir SfM/RGB-D motion, not unrelated KITTI LiDAR. See the
-[geometry-quality bridge](geometry_quality_bridge.md).
-
-### GO/NO-GO gate
-
-**GO:** Across repeated seeded runs, T-GT produces a stable, meaningful advantage over B1, especially for larger ego-motion or longer horizons.
-
-**NO-GO:** If the advantage is flat, first audit pose convention, temporal indexing, leakage, baseline capacity, and whether the future differs enough from the context. If it remains flat, report the negative result or revise the hypothesis instead of scaling.
-
-### Potential research contribution
-
-A defensible paper direction would be:
-
-> an empirical characterization of the relationship among ego-motion magnitude, prediction horizon, pose-estimation error, and the value of explicit geometric conditioning.
-
-That becomes interesting if the project identifies a reproducible boundary—for example, a pose-error regime beyond which conditioning hurts, or a confidence mechanism that recovers performance. It is not novel merely because pose is provided to a predictor.
-
----
 
 ## Checkpoint ladder
 
@@ -543,7 +489,6 @@ Every stage must cross both a numerical and a visual gate.
 | Sparse SfM | final reprojection error and registered-view count | recognizable cloud plus camera path |
 | RGB-D ICP | GT translation/rotation error | fixed-view alignment with residual colours |
 | LiDAR odometry | ATE/RPE and sequence length | estimated versus GT path plus BEV |
-| World model | repeated-run delta versus B1 | horizon/motion/pose-quality curves |
 
 ## Visual-review checklist
 
@@ -561,6 +506,9 @@ Before accepting any figure:
 
 ## What the final portfolio story should sound like
 
-> I built and validated a geometry-first 3D vision pipeline across images, RGB-D, and LiDAR. It recovers two-view pose, triangulates and globally refines sparse structure, validates point-cloud registration against ground-truth motion, and measures LiDAR odometry drift with ATE/RPE and BEV outputs. I then use the same geometry stack to test whether future-latent prediction benefits from ground-truth versus realistically estimated or corrupted ego-motion, with results separated by motion magnitude and prediction horizon.
+> I built and validated a geometry-first 3D vision pipeline across images, RGB-D, and LiDAR.
+> It recovers two-view pose, triangulates and globally refines sparse structure, validates
+> point-cloud registration against ground-truth motion, and measures LiDAR odometry drift
+> with ATE/RPE and BEV outputs.
 
 That is one coherent project. Segmentation, elevation mapping, many datasets, and planning are valuable topics, but they do not need to be inside this story.

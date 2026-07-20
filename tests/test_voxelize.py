@@ -1,5 +1,5 @@
 """
-Tests for spatialwm.perception.voxelize — RED now, green on impl.
+Tests for the voxel occupancy and BEV coordinate contracts.
 
 Contracts defended:
 1. voxelize() marks occupied cells correctly for known point positions.
