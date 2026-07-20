@@ -100,6 +100,8 @@ def generate_kitti_sfm_figure(
     aligned_points: np.ndarray,
     point_colours: np.ndarray,
     ate_rmse: float,
+    dataset_label: str,
+    stride: int,
     output_path: Path,
 ) -> dict[str, float | int]:
     """Render the real-world images-to-map-to-trajectory story in one figure."""
@@ -264,8 +266,8 @@ def generate_kitti_sfm_figure(
 
     fig.suptitle(
         "Real-World Incremental SfM on KITTI: Calibrated Images to Sparse 3D Map\n"
-        f"2011-09-26 drive 0005 | frames {result.registered_image_indices[0]}–"
-        f"{result.registered_image_indices[-1]} (stride 2) | "
+        f"{dataset_label} | frames {result.registered_image_indices[0]}–"
+        f"{result.registered_image_indices[-1]} (stride {stride}) | "
         f"{len(result.poses_world_to_camera)} registered cameras",
         fontsize=15,
         fontweight="bold",
@@ -359,6 +361,8 @@ def main() -> None:
         aligned_points,
         colours,
         ate_rmse,
+        f"{args.date} drive {args.drive}",
+        args.stride,
         figure_path,
     )
     np.savez_compressed(

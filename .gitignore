@@ -18,6 +18,4 @@ figures/*
 # Private working documents
 /CLAUDE.md
 /PROGRESS.md
-/docs/decisions.md
-/docs/learning_log.md
-/docs/interview_code_walkthrough.md
+/docs/

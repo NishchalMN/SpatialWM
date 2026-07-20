@@ -24,8 +24,20 @@ calibration + poses    │                                ↓
                               └─ scan-to-scan / submap odometry → ATE/RPE → BEV
 ```
 
-Read [the stage-by-stage 3D vision story](docs/3d_vision_story.md) for the intuition,
-coordinate contracts, failure modes, and completion checks.
+## Results snapshot
+
+| Capability | Bounded evidence |
+|---|---|
+| Sensor calibration | 20,468 / 123,397 Velodyne returns project into KITTI frame 0 and follow image structure |
+| Real-world sparse SfM hero | 20/20 registered views, 3,309 landmarks, 0.264 px BA reprojection RMSE |
+| Frozen three-drive SfM suite | 48/48 registered views, 0.221 px median BA reprojection RMSE |
+| KITTI LiDAR odometry hero | 0.318 m rigid-aligned ATE over 100 frames, metric scale fixed |
+| Frozen three-drive LiDAR suite | 0.283 m median rigid-aligned ATE over 80 frames per drive |
+| BEV mapping | 9.66 million accumulated cropped returns at 0.10 m cell size |
+
+The hero numbers retain the most interpretable single-sequence visuals. The multi-sequence
+suite applies one configuration without per-drive tuning and exposes both median and worst-case
+behavior. Neither is presented as a KITTI benchmark submission.
 
 ## Verified evidence
 
@@ -37,8 +49,6 @@ frame 0 projects 20,468 of 123,397 Velodyne returns into the rectified camera im
 depth-coloured points visibly follow scene structure.
 
 ![KITTI calibrated LiDAR-camera projection](figures/curated/kitti_lidar_camera_projection.png)
-
-See [sensor ingestion and calibration](docs/sensor_ingestion.md).
 
 ### 2. Robust image geometry
 
@@ -62,7 +72,7 @@ to **0.264 px**.
 The figure connects image observations, map expansion, the coloured outdoor point cloud, and
 the camera path. The monocular trajectory is Sim(3)-aligned only as a diagnostic; its aligned
 ATE is not a metric-scale portfolio claim. TartanAir remains a controlled RGB-D and SfM
-regression dataset. See [incremental sparse SfM](docs/sparse_sfm.md).
+regression dataset.
 
 ### 4. Bundle adjustment and RGB-D registration
 
@@ -96,7 +106,19 @@ bird's-eye-view return-density map.
 
 ![KITTI LiDAR BEV return density](figures/curated/kitti_lidar_bev.png)
 
-See [LiDAR odometry, local submaps, and BEV](docs/lidar_odometry_bev.md).
+### 6. Frozen multi-sequence robustness
+
+The same settings were applied to KITTI raw drives 0001, 0005, and 0011: 16 monocular views
+and 80 LiDAR frames per drive. All 48 requested SfM views register successfully. Median SfM
+reprojection RMSE is **0.221 px**, while median rigid-aligned scan-to-scan LiDAR ATE is
+**0.283 m**. The worst LiDAR ATE is 0.713 m on drive 0001, which is retained rather than
+hidden by reporting only the best drive.
+
+The five-scan submap improves ATE on two of three drives but worsens it on drive 0005. This
+supports the narrower conclusion that submaps change the local/global error tradeoff; they are
+not a universally better estimator.
+
+![KITTI three-drive frozen-configuration summary](figures/curated/kitti_multisequence_summary.png)
 
 ## Reproduce
 
@@ -110,7 +132,7 @@ Download and validate the bounded KITTI slice:
 
 ```bash
 uv run python scripts/download_kitti_slice.py \
-  --frames 100 --output-dir data/raw/kitti --max-gb 1.0 --download
+  --drive 0005 --frames 100 --output-dir data/raw/kitti --max-gb 1.0 --download
 uv run python scripts/build_sensor_manifest.py \
   --frames 100 --output-dir data/processed/manifests
 ```
@@ -124,6 +146,20 @@ uv run python scripts/evaluate_kitti_sfm.py \
   --output-dir figures/curated
 uv run python scripts/evaluate_kitti_lidar.py \
   --kitti-root data/raw/kitti --frames 100 --output-dir figures/curated
+```
+
+Run the frozen three-drive robustness suite:
+
+```bash
+uv run python scripts/download_kitti_slice.py \
+  --drive 0001 --frames 80 --output-dir data/raw/kitti --max-gb 0.5 --download
+uv run python scripts/download_kitti_slice.py \
+  --drive 0011 --frames 80 --output-dir data/raw/kitti --max-gb 1.0 --download
+uv run python scripts/evaluate_kitti_suite.py \
+  --drives 0001 0005 0011 \
+  --sfm-views 16 --sfm-stride 2 --lidar-frames 80 \
+  --runs-dir data/processed/kitti_multisequence \
+  --output-dir figures/curated
 ```
 
 Raw data and generated manifests are not committed. Curated figures, JSON metrics, and compact
@@ -142,16 +178,3 @@ NPZ reconstructions are versioned.
 The implementation uses mature OpenCV, Open3D, SciPy, NumPy, and pykitti components with
 repository-specific orchestration, transform contracts, tests, metrics, and inspected
 visuals. It is not described as “from scratch.”
-
-## Documentation
-
-- [Complete 3D vision story](docs/3d_vision_story.md)
-- [Sensor ingestion and calibration](docs/sensor_ingestion.md)
-- [Feature matching](docs/feature_matching.md)
-- [Two-view geometry](docs/two_view_geometry.md)
-- [RANSAC](docs/ransac.md)
-- [Incremental sparse SfM](docs/sparse_sfm.md)
-- [Bundle adjustment](docs/bundle_adjust.md)
-- [ICP](docs/icp.md)
-- [TartanAir registration](docs/tartanair_registration.md)
-- [KITTI LiDAR odometry and BEV](docs/lidar_odometry_bev.md)

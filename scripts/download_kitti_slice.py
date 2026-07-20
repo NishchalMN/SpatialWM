@@ -1,6 +1,6 @@
-"""Download a pinned KITTI raw drive slice and calibration data.
+"""Download a pinned slice from one of the curated KITTI raw drives.
 
-Lays out data under `<output-dir>/2011_09_26/` to match pykitti structure.
+Lays out data under `<output-dir>/<date>/` to match pykitti structure.
 """
 
 from __future__ import annotations
@@ -14,14 +14,36 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-DRIVE_URL = (
-    "https://s3.eu-central-1.amazonaws.com/avg-kitti/raw_data/"
-    "2011_09_26_drive_0005/2011_09_26_drive_0005_sync.zip"
-)
-DRIVE_SIZE = 645940900
+KITTI_RAW_BASE_URL = "https://s3.eu-central-1.amazonaws.com/avg-kitti/raw_data"
 
-CALIB_URL = "https://s3.eu-central-1.amazonaws.com/avg-kitti/raw_data/2011_09_26_calib.zip"
-CALIB_SIZE = 4068
+# Archive sizes are pinned so a changed or truncated remote object fails before extraction.
+# These three drives provide bounded, fixed inputs for the portfolio robustness suite.
+CURATED_DRIVE_SIZES = {
+    ("2011_09_26", "0001"): 458643963,
+    ("2011_09_26", "0005"): 645940900,
+    ("2011_09_26", "0011"): 939815328,
+}
+CALIBRATION_SIZES = {"2011_09_26": 4068}
+
+
+def archive_urls(date: str, drive: str) -> tuple[str, int, str, int]:
+    """Return pinned calibration/drive URLs and byte sizes for a curated raw drive."""
+    key = (date, drive)
+    if key not in CURATED_DRIVE_SIZES or date not in CALIBRATION_SIZES:
+        supported = ", ".join(
+            f"{item_date}/{item_drive}"
+            for item_date, item_drive in sorted(CURATED_DRIVE_SIZES)
+        )
+        raise ValueError(f"unsupported KITTI raw drive {date}/{drive}; choose one of: {supported}")
+    stem = f"{date}_drive_{drive}"
+    drive_url = f"{KITTI_RAW_BASE_URL}/{stem}/{stem}_sync.zip"
+    calibration_url = f"{KITTI_RAW_BASE_URL}/{date}_calib.zip"
+    return (
+        calibration_url,
+        CALIBRATION_SIZES[date],
+        drive_url,
+        CURATED_DRIVE_SIZES[key],
+    )
 
 
 def positive_int(val: str) -> int:
@@ -85,6 +107,16 @@ def main() -> None:
         help="Number of frames to extract (positive integer, default 10)",
     )
     ap.add_argument(
+        "--date",
+        default="2011_09_26",
+        help="KITTI raw recording date (default: 2011_09_26)",
+    )
+    ap.add_argument(
+        "--drive",
+        default="0005",
+        help="Pinned KITTI raw drive number: 0001, 0005, or 0011 (default: 0005)",
+    )
+    ap.add_argument(
         "--output-dir",
         default="data/raw/kitti",
         help="Output directory layout base (default: data/raw/kitti)",
@@ -100,20 +132,26 @@ def main() -> None:
         action="store_true",
         help="Perform actual network transfer and extraction (default is dry run)",
     )
+    ap.add_argument(
+        "--list-files",
+        action="store_true",
+        help="List every selected archive member during a dry run.",
+    )
 
     args = ap.parse_args()
 
     out_dir = Path(args.output_dir)
     frames_count = args.frames
+    calib_url, calib_size, drive_url, drive_size = archive_urls(args.date, args.drive)
 
     # Determine files to extract
     calib_files = [
-        "2011_09_26/calib_cam_to_cam.txt",
-        "2011_09_26/calib_imu_to_velo.txt",
-        "2011_09_26/calib_velo_to_cam.txt",
+        f"{args.date}/calib_cam_to_cam.txt",
+        f"{args.date}/calib_imu_to_velo.txt",
+        f"{args.date}/calib_velo_to_cam.txt",
     ]
 
-    drive_prefix = "2011_09_26/2011_09_26_drive_0005_sync"
+    drive_prefix = f"{args.date}/{args.date}_drive_{args.drive}_sync"
     drive_files = [
         f"{drive_prefix}/oxts/timestamps.txt",
         f"{drive_prefix}/velodyne_points/timestamps.txt",
@@ -129,12 +167,12 @@ def main() -> None:
         print(f"[Dry Run] Target base directory: {out_dir.resolve()}")
         print(f"[Dry Run] Requested frames to extract: {frames_count}")
         print("[Dry Run] Archives that would be validated and downloaded:")
-        print(f"  - Calibration: {CALIB_URL} (expected size: {CALIB_SIZE} bytes)")
-        print(f"  - Drive Sync: {DRIVE_URL} (expected size: {DRIVE_SIZE} bytes)")
-        print(f"[Dry Run] Total expected download size: {CALIB_SIZE + DRIVE_SIZE} bytes")
+        print(f"  - Calibration: {calib_url} (expected size: {calib_size} bytes)")
+        print(f"  - Drive Sync: {drive_url} (expected size: {drive_size} bytes)")
+        print(f"[Dry Run] Total expected download size: {calib_size + drive_size} bytes")
 
         max_bytes = int(args.max_gb * 1024 * 1024 * 1024)
-        if CALIB_SIZE + DRIVE_SIZE > max_bytes:
+        if calib_size + drive_size > max_bytes:
             print(
                 f"[Dry Run] WARNING: Expected download size exceeds "
                 f"--max-gb limit of {args.max_gb} GB ({max_bytes} bytes)."
@@ -142,41 +180,49 @@ def main() -> None:
 
         print("[Dry Run] Creating target output directory structure...")
         os.makedirs(
-            out_dir / "2011_09_26" / "2011_09_26_drive_0005_sync" / "oxts" / "data",
+            out_dir / args.date / f"{args.date}_drive_{args.drive}_sync" / "oxts" / "data",
             exist_ok=True,
         )
         os.makedirs(
-            out_dir / "2011_09_26" / "2011_09_26_drive_0005_sync" / "velodyne_points" / "data",
+            out_dir
+            / args.date
+            / f"{args.date}_drive_{args.drive}_sync"
+            / "velodyne_points"
+            / "data",
             exist_ok=True,
         )
         os.makedirs(
-            out_dir / "2011_09_26" / "2011_09_26_drive_0005_sync" / "image_02" / "data",
+            out_dir / args.date / f"{args.date}_drive_{args.drive}_sync" / "image_02" / "data",
             exist_ok=True,
         )
 
         total_files = len(calib_files) + len(drive_files)
-        print(f"[Dry Run] Files that would be extracted ({total_files} total):")
-        for f in calib_files:
-            print(f"  - {f}")
-        for f in drive_files:
-            print(f"  - {f}")
+        print(
+            f"[Dry Run] Selection: {total_files} archive members = 3 calibration files, "
+            f"3 timestamp files, and {frames_count} synchronized RGB/LiDAR/OXTS samples."
+        )
+        if args.list_files:
+            for member in calib_files + drive_files:
+                print(f"  - {member}")
+        else:
+            print("[Dry Run] Pass --list-files to print every selected archive member.")
         print("[Dry Run] Dry run complete.")
         return
 
     # Check sizes before downloading
     print("Performing pre-download archive validation...")
-    remote_calib_size = get_remote_size(CALIB_URL)
-    remote_drive_size = get_remote_size(DRIVE_URL)
+    remote_calib_size = get_remote_size(calib_url)
+    remote_drive_size = get_remote_size(drive_url)
 
-    if remote_calib_size != CALIB_SIZE:
+    if remote_calib_size != calib_size:
         raise ValueError(
             f"Remote calibration archive size ({remote_calib_size}) does not match "
-            f"expected size ({CALIB_SIZE})"
+            f"expected size ({calib_size})"
         )
-    if remote_drive_size != DRIVE_SIZE:
+    if remote_drive_size != drive_size:
         raise ValueError(
             f"Remote drive archive size ({remote_drive_size}) does not match "
-            f"expected size ({DRIVE_SIZE})"
+            f"expected size ({drive_size})"
         )
 
     total_bytes = remote_calib_size + remote_drive_size
@@ -194,10 +240,10 @@ def main() -> None:
         drive_zip = tmp_path / "drive.zip"
 
         print(f"Downloading calibration archive to {calib_zip}...")
-        download_file(CALIB_URL, calib_zip, CALIB_SIZE, "Calibration")
+        download_file(calib_url, calib_zip, calib_size, "Calibration")
 
         print(f"Downloading drive sync archive to {drive_zip}...")
-        download_file(DRIVE_URL, drive_zip, DRIVE_SIZE, "Drive Sync")
+        download_file(drive_url, drive_zip, drive_size, "Drive Sync")
 
         # Selective extraction of calibration data
         print(f"Extracting calibration files to {out_dir}...")
